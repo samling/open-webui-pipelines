@@ -120,7 +120,7 @@ class HelperFunctions:
                 url = json_data.get('url', '')
 
                 if user_valves.JINA_CLEAN_CONTENT:
-                    content = self.clean_urls(text)
+                    content = self.clean_urls(content)
 
                 if valves.PAGE_CONTENT_WORDS_LIMIT != 0:
                     content = self.truncate_to_n_words(
@@ -131,6 +131,7 @@ class HelperFunctions:
                     "title": title if title else url,
                     "url": url,
                     "content": content,
+                    "content_length": valves.PAGE_CONTENT_WORDS_LIMIT if valves.PAGE_CONTENT_WORDS_LIMIT != 0 and len(content) > valves.PAGE_CONTENT_WORDS_LIMIT else len(content)
                 }
 
         except aiohttp.ClientError as e:
