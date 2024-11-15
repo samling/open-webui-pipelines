@@ -78,6 +78,54 @@ class HelperFunctions:
         except requests.exceptions.RequestException as e:
             return None
 
+    def process_scrape(self, result, valves, user_valves):
+        functions = HelperFunctions()
+
+        # await emitter.emit(f"Scraping {result['url']}")
+        jina_url = f"https://r.jina.ai/{result['url']}"
+
+        headers = {
+            "X-No-Cache": "true" if valves.JINA_DISABLE_CACHING else "false",
+            "X-With-Generated-Alt": "true",
+            "X-Retain-Images": "none",
+        }
+
+        if user_valves.JINA_API_KEY:
+            headers["Authorization"] = f"Bearer {user_valves.JINA_API_KEY}"
+        elif valves.JINA_GLOBAL_API_KEY:
+            headers["Authorization"] = f"Bearer {valves.JINA_GLOBAL_API_KEY}"
+
+        try:
+            response = requests.get(jina_url, headers=headers, timeout=120)
+            response.raise_for_status()
+
+            should_clean = user_valves.JINA_CLEAN_CONTENT
+
+            content = functions.clean_urls(response.text) if should_clean else response.text
+
+            title = functions.extract_title(content)
+
+            content = response.text
+            if valves.PAGE_CONTENT_WORDS_LIMIT != 0:
+                content = functions.truncate_to_n_words(
+                    content, valves.PAGE_CONTENT_WORDS_LIMIT
+                )
+
+            return {
+                "title": title,
+                "url": jina_url,
+                "content": content,
+                "excerpt": functions.generate_excerpt(content),
+            }
+
+        except requests.exceptions.RequestException as e:
+            return {
+                    "title": jina_url,
+                    "url": jina_url,
+                    "content": f"Failed to retrieve the page. Error: {str(e)}",
+                    "excerpt": ""
+                }
+
     def extract_title(self, text):
         """
         Extracts the title from a string containing structured text.
@@ -124,7 +172,7 @@ class EventEmitter:
 class Tools:
     class Valves(BaseModel):
         SEARXNG_ENGINE_API_BASE_URL: str = Field(
-            default="",
+            default="https://example.com/search",
             description="The base URL for Search Engine",
         )
         SEARXNG_IGNORED_WEBSITES: str = Field(
@@ -271,83 +319,28 @@ class Tools:
         )
 
         scrape_results_json = []
-
-        for result in search_results_json:
-            await emitter.emit(f"Scraping {result['url']}")
-            jina_url = f"https://r.jina.ai/{result['url']}"
-
-            headers = {
-                "X-No-Cache": "true" if self.valves.JINA_DISABLE_CACHING else "false",
-                "X-With-Generated-Alt": "true",
-                "X-Retain-Images": "none",
-            }
-
-            if self.user_valves.JINA_API_KEY:
-                headers["Authorization"] = f"Bearer {self.user_valves.JINA_API_KEY}"
-            elif self.valves.JINA_GLOBAL_API_KEY:
-                headers["Authorization"] = f"Bearer {self.valves.JINA_GLOBAL_API_KEY}"
-
-            try:
-                response = requests.get(jina_url, headers=headers, timeout=120)
-                response.raise_for_status()
-
-                should_clean = "JINA_CLEAN_CONTENT" not in self.user_valves
-
-                # should_clean = self.user_valves.JINA_CLEAN_CONTENT
-                # if should_clean:
-                #     await emitter.emit("Received content, cleaning up ...")
-                # content = functions.clean_urls(response.text) if should_clean else response.text
-
-                # title = functions.extract_title(content)
-
-                content = response.text
-                if self.valves.PAGE_CONTENT_WORDS_LIMIT != 0:
-                    content = functions.truncate_to_n_words(
-                        content, self.valves.PAGE_CONTENT_WORDS_LIMIT
-                    )
-
-                result_site = {
-                    "title": jina_url,
-                    "url": jina_url,
-                    "content": content,
-                    "excerpt": functions.generate_excerpt(content),
-                }
-                scrape_results_json.append(result_site)
-
-                if self.valves.CITATION_LINKS and __event_emitter__:
-                    await __event_emitter__(
-                        {
-                            "type": "citation",
-                            "data": {
-                                "document": result_site["content"],
-                                "metadata": [{"source": result_site["url"]}],
-                                "source": {"name": result_site["title"]},
-                            },
-                        }
-                    )
-
-                await emitter.emit(
-                    status="complete",
-                    description="Website content retrieved and processed successfully",
-                    done=True,
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    functions.process_scrape, result, self.valves, self.user_valves
                 )
+                for result in search_results_json
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                result_json = future.result()
+                if result_json:
+                    try:
+                        json.dumps(result_json)
+                        scrape_results_json.append(result_json)
+                    except (TypeError, ValueError):
+                        continue
+                if (
+                    len(scrape_results_json)
+                    >= self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO
+                ):
+                    break
 
-            except requests.exceptions.RequestException as e:
-                scrape_results_json.append(
-                    {
-                        "url": jina_url,
-                        "content": f"Failed to retrieve the page. Error: {str(e)}",
-                    }
-                )
-
-                await emitter.emit(
-                    status="error",
-                    description=f"Error fetching website content: {str(e)}",
-                    done=True,
-                )
-
-        # return json.dumps(scrape_results_json, ensure_ascii=False)
-        return scrape_results_json
+        return json.dumps(scrape_results_json, ensure_ascii=False)
 
 
 async def main():
