@@ -6,8 +6,8 @@ version: 0.1.0
 license: MIT
 """
 
+import aiohttp
 import asyncio
-import concurrent.futures
 import re
 import requests
 import json
@@ -19,16 +19,18 @@ from urllib.parse import urlparse
 
 
 class HelperFunctions:
-    def __init__(self):
+    def __init__(self, session: aiohttp.ClientSession = None):
+        self.session = session
         pass
+
+    async def cleanup(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
 
     def get_base_url(self, url):
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
         return base_url
-
-    def generate_excerpt(self, content, max_length=200):
-        return content[:max_length] + "..." if len(content) > max_length else content
 
     def format_text(self, original_text):
         soup = BeautifulSoup(original_text, "html.parser")
@@ -42,14 +44,17 @@ class HelperFunctions:
     def remove_emojis(self, text):
         return "".join(c for c in text if not unicodedata.category(c).startswith("So"))
 
-    def process_search_result(self, result, valves):
-        title_site = self.remove_emojis(result["title"])
-        url_site = result["url"]
-        snippet = result.get("content", "")
+    async def process_search_result(self, result, valves):
+        if not self.session:
+            raise ValueError("No session provided to HelperFunctions")
+
+        title = self.remove_emojis(result["title"])
+        url = result["url"]
+        excerpt = result.get("content", "")
 
         # Check if the website is in the ignored list, but only if IGNORED_WEBSITES is not empty
         if valves.SEARXNG_IGNORED_WEBSITES:
-            base_url = self.get_base_url(url_site)
+            base_url = self.get_base_url(url)
             if any(
                 ignored_site.strip() in base_url
                 for ignored_site in valves.SEARXNG_IGNORED_WEBSITES.split(",")
@@ -57,37 +62,46 @@ class HelperFunctions:
                 return None
 
         try:
-            response_site = requests.get(url_site, timeout=20)
-            response_site.raise_for_status()
-            html_content = response_site.text
+            async with self.session.get(
+                url,
+                timeout=20,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+                }
+            ) as response:
+                if response.status != 200:
+                    return None
 
-            soup = BeautifulSoup(html_content, "html.parser")
-            content_site = self.format_text(soup.get_text(separator=" ", strip=True))
+                html_content = await response.text()
 
-            truncated_content = self.truncate_to_n_words(
-                content_site, valves.PAGE_CONTENT_WORDS_LIMIT
-            )
+                soup = BeautifulSoup(html_content, "html.parser")
+                content_site = self.format_text(soup.get_text(separator=" ", strip=True))
 
-            return {
-                "title": title_site,
-                "url": url_site,
-                "content": truncated_content,
-                "snippet": self.remove_emojis(snippet),
-            }
+                truncated_content = self.truncate_to_n_words(
+                    content_site, valves.PAGE_CONTENT_WORDS_LIMIT
+                )
 
-        except requests.exceptions.RequestException as e:
+                return {
+                    "title": title,
+                    "url": url,
+                    "content": truncated_content,
+                    "excerpt": self.remove_emojis(excerpt),
+                }
+
+        except (aiohttp.ClientError, asyncio.TimeoutErorr) as e:
             return None
 
-    def process_scrape(self, result, valves, user_valves):
-        functions = HelperFunctions()
+    async def process_scrape(self, result, valves, user_valves):
+        if not self.session:
+            raise ValueError("No session provided to HelperFunctions")
 
-        # await emitter.emit(f"Scraping {result['url']}")
         jina_url = f"https://r.jina.ai/{result['url']}"
 
         headers = {
+            "Accept": "application/json",
             "X-No-Cache": "true" if valves.JINA_DISABLE_CACHING else "false",
-            "X-With-Generated-Alt": "true",
-            "X-Retain-Images": "none",
+            "X-With-Links-Summary": "true",
+            "X-With-Images-Summary": "true",
         }
 
         if user_valves.JINA_API_KEY:
@@ -96,35 +110,50 @@ class HelperFunctions:
             headers["Authorization"] = f"Bearer {valves.JINA_GLOBAL_API_KEY}"
 
         try:
-            response = requests.get(jina_url, headers=headers, timeout=120)
-            response.raise_for_status()
+            async with self.session.get(jina_url, headers=headers, timeout=120) as response:
+                text = await response.text()
+                json_data = json.loads(text)['data']
 
-            should_clean = user_valves.JINA_CLEAN_CONTENT
+                title = json_data.get('title', '')
+                # description = json_data.get('description', '')
+                content = json_data.get('content', '')
+                url = json_data.get('url', '')
 
-            content = functions.clean_urls(response.text) if should_clean else response.text
+                if user_valves.JINA_CLEAN_CONTENT:
+                    content = self.clean_urls(text)
 
-            title = functions.extract_title(content)
+                if valves.PAGE_CONTENT_WORDS_LIMIT != 0:
+                    content = self.truncate_to_n_words(
+                        content, valves.PAGE_CONTENT_WORDS_LIMIT
+                    )
 
-            content = response.text
-            if valves.PAGE_CONTENT_WORDS_LIMIT != 0:
-                content = functions.truncate_to_n_words(
-                    content, valves.PAGE_CONTENT_WORDS_LIMIT
-                )
-
-            return {
-                "title": title,
-                "url": jina_url,
-                "content": content,
-                "excerpt": functions.generate_excerpt(content),
-            }
-
-        except requests.exceptions.RequestException as e:
-            return {
-                    "title": jina_url,
-                    "url": jina_url,
-                    "content": f"Failed to retrieve the page. Error: {str(e)}",
-                    "excerpt": ""
+                return {
+                    "title": title if title else url,
+                    "url": url,
+                    "content": content,
                 }
+
+        except aiohttp.ClientError as e:
+            return {
+                "title": title if title else url,
+                "url": url,
+                "content": f"Failed to retrieve the page. Error: {str(e)}",
+                "description": ""
+            }
+        except json.JSONDecodeError as e:
+            return {
+                "title": title if title else url,
+                "url": url,
+                "content": f"Failed to parse JSON response. Error: {str(e)}",
+                "description": ""
+            }
+        except Exception as e:
+            return {
+                "title": title if title else url,
+                "url": url,
+                "content": f"Unexpected error occurred. Error: {str(e)}",
+                "description": ""
+            }
 
     def extract_title(self, text):
         """
@@ -146,9 +175,20 @@ class HelperFunctions:
         return re.sub(r"\((http[^)]+)\)", "", text)
 
     def truncate_to_n_words(self, text, token_limit):
-        tokens = text.split()
-        truncated_tokens = tokens[:token_limit]
-        return " ".join(truncated_tokens)
+        if token_limit == 0 or not text:
+            return text
+
+        words = text.split()
+
+        if len(words) <= token_limit:
+            return text
+
+        truncated_text = ' '.join(words[:token_limit])
+        
+        if len(words) > token_limit:
+            truncated_text += '...'
+        
+        return truncated_text
 
 
 class EventEmitter:
@@ -219,6 +259,19 @@ class Tools:
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
         }
+        connector = aiohttp.TCPConnector(
+            limit=10,
+            limit_per_host=5,
+            enable_cleanup_closed=True,
+            force_close=True,
+            ttl_dns_cache=300,
+        )
+        self.session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=30),
+            headers=self.headers
+        )
+        self.functions = HelperFunctions(session=self.session)
 
     async def search_web(
         self,
@@ -230,125 +283,117 @@ class Tools:
         :params query: Web Query used in search engine.
         :return: The content of the pages in json format.
         """
-        functions = HelperFunctions()
-        emitter = EventEmitter(__event_emitter__)
-
-        await emitter.emit(f"Initiating web search for: {query}")
-
-        search_engine_url = self.valves.SEARXNG_ENGINE_API_BASE_URL
-
-        # Ensure RETURNED_SCRAPED_PAGES_NO does not exceed SCRAPED_PAGES_NO
-        if (
-            self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO
-            > self.valves.SEARXNG_SCRAPED_PAGES_NO
-        ):
-            self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO = (
-                self.valves.SEARXNG_SCRAPED_PAGES_NO
-            )
-
-        params = {
-            "q": query,
-            "format": "json",
-            "number_of_results": self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO,
-        }
-
         try:
-            await emitter.emit("Sending request to search engine")
-            resp = requests.get(
-                search_engine_url, params=params, headers=self.headers, timeout=120
-            )
+            emitter = EventEmitter(__event_emitter__)
 
-            resp.raise_for_status()
-            data = resp.json()
+            await emitter.emit(f"Initiating web search for: {query}")
 
-            results = data.get("results", [])
-            limited_results = results[: self.valves.SEARXNG_SCRAPED_PAGES_NO]
-            await emitter.emit(f"Retrieved {len(limited_results)} search results")
+            search_engine_url = self.valves.SEARXNG_ENGINE_API_BASE_URL
 
-        except requests.exceptions.RequestException as e:
-            await emitter.emit(
-                status="error",
-                description=f"Error during search: {str(e)}",
-                done=True,
-            )
-            return json.dumps({"error": str(e)})
+            # Ensure RETURNED_SCRAPED_PAGES_NO does not exceed SCRAPED_PAGES_NO
+            if (
+                self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO
+                > self.valves.SEARXNG_SCRAPED_PAGES_NO
+            ):
+                self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO = (
+                    self.valves.SEARXNG_SCRAPED_PAGES_NO
+                )
 
-        # Process the results
-        search_results_json = []
-        if limited_results:
-            await emitter.emit(f"Processing search results")
+            params = {
+                "q": query,
+                "format": "json",
+                "number_of_results": self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO,
+            }
 
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                futures = [
-                    executor.submit(
-                        functions.process_search_result, result, self.valves
-                    )
+            try:
+                await emitter.emit("Sending request to search engine")
+                resp = requests.get(
+                    search_engine_url, params=params, headers=self.headers, timeout=120
+                )
+
+                resp.raise_for_status()
+                data = resp.json()
+
+                results = data.get("results", [])
+                limited_results = results[: self.valves.SEARXNG_SCRAPED_PAGES_NO]
+                await emitter.emit(f"Retrieved {len(limited_results)} search results")
+
+            except requests.exceptions.RequestException as e:
+                await emitter.emit(
+                    status="error",
+                    description=f"Error during search: {str(e)}",
+                    done=True,
+                )
+                return json.dumps({"error": str(e)})
+
+            # Process the results
+            search_results_json = []
+            if limited_results:
+                await emitter.emit(f"Processing search results")
+
+                tasks = [
+                    self.functions.process_search_result(result, self.valves)
                     for result in limited_results
                 ]
-                for future in concurrent.futures.as_completed(futures):
-                    result_json = future.result()
+                completed_results = await asyncio.gather(*tasks)
+                for result_json in completed_results:
                     if result_json:
                         try:
                             json.dumps(result_json)
                             search_results_json.append(result_json)
                         except (TypeError, ValueError):
                             continue
-                    if (
-                        len(search_results_json)
-                        >= self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO
-                    ):
-                        break
+                        if len(search_results_json) >= self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO:
+                            break
 
-            if self.valves.CITATION_LINKS and __event_emitter__:
-                for result in search_results_json:
-                    await __event_emitter__(
-                        {
-                            "type": "citation",
-                            "data": {
-                                "document": [result["content"]],
-                                "metadata": [{"source": result["url"]}],
-                                "source": {"name": result["title"]},
+                if self.valves.CITATION_LINKS and __event_emitter__:
+                    for result in search_results_json:
+                        await __event_emitter__(
+                            {
+                                "type": "citation",
+                                "data": {
+                                    "source": {"name": result["title"]},
+                                    "document": [result["content"]],
+                                    "metadata": [{"source": result["url"]}],
+                                },
                             },
-                        },
-                    )
+                        )
 
-        await emitter.emit(
-            status="complete",
-            description=f"Web search completed. Retrieved content from {len(search_results_json)} pages",
-            done=True,
-        )
+            await emitter.emit(
+                status="complete",
+                description=f"Web search completed. Retrieved content from {len(search_results_json)} pages",
+                done=True,
+            )
 
-        scrape_results_json = []
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [
-                executor.submit(
-                    functions.process_scrape, result, self.valves, self.user_valves
-                )
+            scrape_results_json = []
+            tasks = [
+                self.functions.process_scrape(result, self.valves, self.user_valves)
                 for result in search_results_json
             ]
-            for future in concurrent.futures.as_completed(futures):
-                result_json = future.result()
+            completed_scrapes = await asyncio.gather(*tasks)
+            for result_json in completed_scrapes:
                 if result_json:
                     try:
                         json.dumps(result_json)
                         scrape_results_json.append(result_json)
                     except (TypeError, ValueError):
                         continue
-                if (
-                    len(scrape_results_json)
-                    >= self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO
-                ):
-                    break
+                    if len(scrape_results_json) >= self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO:
+                        break
 
-        return json.dumps(scrape_results_json, ensure_ascii=False)
-
-
-async def main():
-    tools = Tools()
-    results = await tools.search_web("Who won the most recent celtics game")
-
-    print(results)
+            return json.dumps(scrape_results_json, ensure_ascii=False)
+        
+        finally:
+            if not self.session.closed:
+                await self.functions.cleanup()
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# async def main():
+#     tools = Tools()
+#     results = await tools.search_web("Who won the most recent celtics game")
+
+#     print(results)
+
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
