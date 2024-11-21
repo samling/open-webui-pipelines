@@ -7,7 +7,6 @@ license: MIT
 requirements: haystack-ai,pymilvus==2.4.9,milvus-haystack
 """
 
-import asyncio
 import os
 import json
 from pydantic import BaseModel, Field
@@ -54,7 +53,7 @@ class Tools:
             description="The embedding model from OpenAI (or compatible endpoint) to use.",
         )
         MILVUS_TOP_K: int = Field(
-            default=3,
+            default=50,
             description="The number of results to consider.",
         )
 
@@ -85,8 +84,6 @@ class Tools:
             print(f"ENDPOINT: {self.valves.MILVUS_ENDPOINT}")
 
             milvus_endpoint = self.valves.MILVUS_ENDPOINT
-            milvus_openai_base_url = self.valves.MILVUS_OPENAI_BASE_URL
-            milvus_openai_api_key = self.valves.MILVUS_OPENAI_API_KEY
             milvus_openai_text_embedder = self.valves.MILVUS_OPENAI_TEXT_EMBEDDER
             milvus_top_k = self.valves.MILVUS_TOP_K
 
@@ -127,7 +124,12 @@ class Tools:
                     }
                 )
                 await emitter.emit(f"Retrieved query results")
-                return {"results": results["retriever"]["documents"]}
+
+                response = ""
+                for doc in results["retriever"]["documents"]:
+                    response += f"{doc.content}\n"
+
+                return response
 
             except Exception as e:
                 await emitter.emit(
@@ -142,12 +144,13 @@ class Tools:
                 "content": f"Unexpected error occurred. Error: {str(e)}",
             }
 
-async def main():
-    tools = Tools()
-    results = await tools.query("What are all the transactions in October 2024?")
+# Local testing
+# async def main():
+#     tools = Tools()
+#     results = await tools.query("What are all the transactions in October 2024?")
  
-    print(results)
+#     print(results)
  
  
-if __name__ == "__main__":
-    asyncio.run(main())
+# if __name__ == "__main__":
+#     asyncio.run(main())
