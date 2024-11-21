@@ -4,6 +4,7 @@ author: samling with heavy inspiration from constLiakos, justinh-rahb and ther3z
 funding_url: https://github.com/open-webui
 version: 0.1.0
 license: MIT
+requirements: haystack-ai,pymilvus==2.4.9,milvus-haystack
 """
 
 import json
