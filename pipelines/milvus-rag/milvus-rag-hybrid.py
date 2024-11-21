@@ -43,7 +43,7 @@ class Pipeline:
         from haystack.components.builders import PromptBuilder
         from haystack.components.generators import OpenAIGenerator
         from milvus_haystack import MilvusDocumentStore
-        from milvus_haystack.milvus_embedding_retriever import MilvusEmbeddingRetriever
+        from milvus_haystack.milvus_embedding_retriever import MilvusEmbeddingRetriever, MilvusHybridRetriever
         from haystack_integrations.components.embedders.fastembed import FastembedSparseTextEmbedder
 
         prompt_template = """
@@ -60,16 +60,17 @@ class Pipeline:
         """
 
         document_store = MilvusDocumentStore(
-            connection_args={"uri": self.valves.MILVUS_URL}
+            connection_args={"uri": self.valves.MILVUS_URL},
+            sparse_vector_field="sparse_vector",
         )
         self.rag_pipeline = Pipeline()
+        self.rag_pipeline.add_component("sparse_text_embedder", FastembedSparseTextEmbedder())
         self.rag_pipeline.add_component("dense_text_embedder", OpenAITextEmbedder(model=self.valves.MILVUS_EMBEDDING_MODEL))
-        self.rag_pipeline.add_component("sparse_text_embedder", FastembedSparseTextEmbedder(model="prithvida/Splade_PP_en_v1"))
-        self.rag_pipeline.add_component("retriever", MilvusEmbeddingRetriever(document_store=document_store, top_k=self.valves.MILVUS_TOP_K))
+        self.rag_pipeline.add_component("retriever", MilvusHybridRetriever(document_store=document_store, top_k=self.valves.MILVUS_TOP_K))
         self.rag_pipeline.add_component("prompt_builder", PromptBuilder(template=prompt_template))
         self.rag_pipeline.add_component("generator", OpenAIGenerator(generation_kwargs={"temperature": 0}, model=self.valves.MILVUS_GENERATOR_MODEL))
 
-        self.rag_pipeline.connect("sparse_text_embedder.embedding", "retriever.query_sparse_embedding")
+        self.rag_pipeline.connect("sparse_text_embedder.sparse_embedding", "retriever.query_sparse_embedding")
         self.rag_pipeline.connect("dense_text_embedder.embedding", "retriever.query_embedding")
         self.rag_pipeline.connect("retriever.documents", "prompt_builder.documents")
         self.rag_pipeline.connect("prompt_builder", "generator")
