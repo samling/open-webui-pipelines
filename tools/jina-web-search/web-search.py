@@ -88,7 +88,7 @@ class HelperFunctions:
                     "excerpt": self.remove_emojis(excerpt),
                 }
 
-        except (aiohttp.ClientError, asyncio.TimeoutErorr) as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             return None
 
     async def process_scrape(self, result, valves, user_valves):
@@ -384,10 +384,8 @@ class Tools:
 
             return json.dumps(scrape_results_json, ensure_ascii=False)
         
-        finally:
-            if not self.session.closed:
-                await self.functions.cleanup()
-
+        except Exception as e:
+            raise e
 
 # async def main():
 #     tools = Tools()
