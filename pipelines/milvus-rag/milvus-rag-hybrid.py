@@ -1,11 +1,11 @@
 """
-title: Milvus RAG Pipeline
+title: Milvus RAG Hybrid Pipeline
 author: open-webui
 date: 2024-05-30
 version: 1.0
 license: MIT
 description: A pipeline for retrieving relevant information from a knowledge base using the Haystack library.
-requirements: haystack-ai,pymilvus==2.4.9,milvus-haystack
+requirements: haystack-ai,pymilvus==2.4.9,milvus-haystack,fastembed-haystack
 """
 
 from typing import List, Union, Generator, Iterator
@@ -44,6 +44,7 @@ class Pipeline:
         from haystack.components.generators import OpenAIGenerator
         from milvus_haystack import MilvusDocumentStore
         from milvus_haystack.milvus_embedding_retriever import MilvusEmbeddingRetriever
+        from haystack_integrations.components.embedders.fastembed import FastembedSparseTextEmbedder
 
         prompt_template = """
         Given the following information, answer the question.
@@ -62,15 +63,16 @@ class Pipeline:
             connection_args={"uri": self.valves.MILVUS_URL}
         )
         self.rag_pipeline = Pipeline()
-        self.rag_pipeline.add_component("text_embedder", OpenAITextEmbedder(model=self.valves.MILVUS_EMBEDDING_MODEL))
+        self.rag_pipeline.add_component("dense_text_embedder", OpenAITextEmbedder(model=self.valves.MILVUS_EMBEDDING_MODEL))
+        self.rag_pipeline.add_component("sparse_text_embedder", FastembedSparseTextEmbedder(model="prithvida/Splade_PP_en_v1"))
         self.rag_pipeline.add_component("retriever", MilvusEmbeddingRetriever(document_store=document_store, top_k=self.valves.MILVUS_TOP_K))
         self.rag_pipeline.add_component("prompt_builder", PromptBuilder(template=prompt_template))
         self.rag_pipeline.add_component("generator", OpenAIGenerator(generation_kwargs={"temperature": 0}, model=self.valves.MILVUS_GENERATOR_MODEL))
 
-        self.rag_pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
+        self.rag_pipeline.connect("sparse_text_embedder.embedding", "retriever.query_sparse_embedding")
+        self.rag_pipeline.connect("dense_text_embedder.embedding", "retriever.query_embedding")
         self.rag_pipeline.connect("retriever.documents", "prompt_builder.documents")
         self.rag_pipeline.connect("prompt_builder", "generator")
-
 
         pass
 
@@ -90,7 +92,8 @@ class Pipeline:
         question = user_message
         response = self.rag_pipeline.run(
             {
-                "text_embedder": {"text": question},
+                "dense_text_embedder": {"text": question},
+                "sparse_text_embedder": {"text": question},
                 "prompt_builder": {"question": question},
             }
         )
