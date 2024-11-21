@@ -17,7 +17,6 @@ from haystack.components.embedders import OpenAITextEmbedder
 from milvus_haystack import MilvusDocumentStore
 from milvus_haystack.milvus_embedding_retriever import MilvusEmbeddingRetriever
 
-
 class EventEmitter:
     def __init__(self, event_emitter: Callable[[dict], Any] = None):
         self.event_emitter = event_emitter
@@ -51,7 +50,7 @@ class Tools:
             description="The OpenAI API key.",
         )
         MILVUS_OPENAI_TEXT_EMBEDDER: str = Field(
-            default="text-embedding-3-small",
+            default="text-embedding-3-large",
             description="The embedding model from OpenAI (or compatible endpoint) to use.",
         )
         MILVUS_TOP_K: int = Field(
@@ -65,6 +64,8 @@ class Tools:
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
         }
+        os.environ['OPENAI_API_KEY'] = self.valves.MILVUS_OPENAI_API_KEY
+        os.environ['OPENAI_BASE_URL'] = self.valves.MILVUS_OPENAI_BASE_URL
 
     async def query(
         self,
@@ -99,42 +100,42 @@ class Tools:
             rag_pipeline.add_component(
                 "text_embedder",
                 OpenAITextEmbedder(
-                    model="text-embedding-3-small",
-                    api_base_url="",
-                    api_key="",
+                    model=milvus_openai_text_embedder,
+                    # api_base_url=milvus_openai_base_url,
+                    # api_key=milvus_openai_api_key,
                 ),
             )
-            # print("WE ARE RIGHT BEFORE THE ADD COMPONENT 2")
-            # rag_pipeline.add_component(
-            #     "retriever",
-            #     MilvusEmbeddingRetriever(
-            #         document_store=document_store, top_k=milvus_top_k
-            #     ),
-            # )
+            print("WE ARE RIGHT BEFORE THE ADD COMPONENT 2")
+            rag_pipeline.add_component(
+                "retriever",
+                MilvusEmbeddingRetriever(
+                    document_store=document_store, top_k=milvus_top_k
+                ),
+            )
 
-            # print("WE ARE RIGHT BEFORE THE PIPELINE CONNECT")
-            # rag_pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
+            print("WE ARE RIGHT BEFORE THE PIPELINE CONNECT")
+            rag_pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
 
-            # print("WE ARE RIGHT BEFORE THE TRY BLOCK")
-            # try:
-            #     await emitter.emit("Sending request to Milvas")
-            #     print("WE ARE HERE")
+            print("WE ARE RIGHT BEFORE THE TRY BLOCK")
+            try:
+                await emitter.emit("Sending request to Milvas")
+                print("WE ARE HERE")
 
-            #     results = rag_pipeline.run(
-            #         {
-            #             "text_embedder": {"text": query},
-            #         }
-            #     )
-            #     await emitter.emit(f"Retrieved query results")
-            #     return {"results": results["retriever"]["documents"]}
+                results = rag_pipeline.run(
+                    {
+                        "text_embedder": {"text": query},
+                    }
+                )
+                await emitter.emit(f"Retrieved query results")
+                return {"results": results["retriever"]["documents"]}
 
-            # except Exception as e:
-            #     await emitter.emit(
-            #         status="error",
-            #         description=f"Error during search: {str(e)}",
-            #         done=True,
-            #     )
-            #     return json.dumps({"error": str(e)})
+            except Exception as e:
+                await emitter.emit(
+                    status="error",
+                    description=f"Error during search: {str(e)}",
+                    done=True,
+                )
+                return json.dumps({"error": str(e)})
 
         except Exception as e:
             return {
