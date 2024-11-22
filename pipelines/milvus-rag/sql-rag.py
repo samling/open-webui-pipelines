@@ -39,6 +39,17 @@ class Pipeline:
         os.environ["OPENAI_API_KEY"] = self.valves.OPENAI_API_KEY
         os.environ['OPENAI_BASE_URL'] = self.valves.OPENAI_BASE_URL
 
+        pass
+
+    async def on_shutdown(self):
+        # This function is called when the server is stopped.
+        pass
+
+    def pipe(
+        self, user_message: str, model_id: str, messages: List[dict], body: dict
+    ) -> Union[str, Generator, Iterator]:
+        # This is where you can add your custom RAG pipeline.
+        # Typically, you would retrieve relevant information from your knowledge base and synthesize it to generate a response.
         from haystack import component, Pipeline
         from haystack.components.builders import PromptBuilder
         from haystack.components.generators import OpenAIGenerator
@@ -256,24 +267,12 @@ class Pipeline:
         # Send the prompt to the analyzer
         self.sql_pipeline.connect("analysis_prompt.prompt", "analysis_generator.prompt")
 
-        pass
-
-    async def on_shutdown(self):
-        # This function is called when the server is stopped.
-        pass
-
-    def pipe(
-        self, user_message: str, model_id: str, messages: List[dict], body: dict
-    ) -> Union[str, Generator, Iterator]:
-        # This is where you can add your custom RAG pipeline.
-        # Typically, you would retrieve relevant information from your knowledge base and synthesize it to generate a response.
-
-
         question = user_message
 
         try:
             print(f"Current working directory: {os.getcwd()}")
             print(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
+            print(f"DB_PATH: {self.valves.DB_PATH}")
             result = self.sql_pipeline.run(
                 {
                     "query_helper": {
