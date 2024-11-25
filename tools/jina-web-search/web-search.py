@@ -8,6 +8,7 @@ license: MIT
 
 import aiohttp
 import asyncio
+import datetime
 import re
 import requests
 import json
@@ -67,7 +68,7 @@ class HelperFunctions:
                 timeout=20,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-                }
+                },
             ) as response:
                 if response.status != 200:
                     return None
@@ -75,7 +76,9 @@ class HelperFunctions:
                 html_content = await response.text()
 
                 soup = BeautifulSoup(html_content, "html.parser")
-                content_site = self.format_text(soup.get_text(separator=" ", strip=True))
+                content_site = self.format_text(
+                    soup.get_text(separator=" ", strip=True)
+                )
 
                 truncated_content = self.truncate_to_n_words(
                     content_site, valves.PAGE_CONTENT_WORDS_LIMIT
@@ -110,14 +113,16 @@ class HelperFunctions:
             headers["Authorization"] = f"Bearer {valves.JINA_GLOBAL_API_KEY}"
 
         try:
-            async with self.session.get(jina_url, headers=headers, timeout=120) as response:
+            async with self.session.get(
+                jina_url, headers=headers, timeout=120
+            ) as response:
                 text = await response.text()
-                json_data = json.loads(text)['data']
+                json_data = json.loads(text)["data"]
 
-                title = json_data.get('title', '')
+                title = json_data.get("title", "")
                 # description = json_data.get('description', '')
-                content = json_data.get('content', '')
-                url = json_data.get('url', '')
+                content = json_data.get("content", "")
+                url = json_data.get("url", "")
 
                 if user_valves.JINA_CLEAN_CONTENT:
                     content = self.clean_urls(content)
@@ -131,7 +136,12 @@ class HelperFunctions:
                     "title": title if title else url,
                     "url": url,
                     "content": content,
-                    "content_length": valves.PAGE_CONTENT_WORDS_LIMIT if valves.PAGE_CONTENT_WORDS_LIMIT != 0 and len(content) > valves.PAGE_CONTENT_WORDS_LIMIT else len(content)
+                    "content_length": (
+                        valves.PAGE_CONTENT_WORDS_LIMIT
+                        if valves.PAGE_CONTENT_WORDS_LIMIT != 0
+                        and len(content) > valves.PAGE_CONTENT_WORDS_LIMIT
+                        else len(content)
+                    ),
                 }
 
         except aiohttp.ClientError as e:
@@ -139,21 +149,21 @@ class HelperFunctions:
                 "title": title if title else url,
                 "url": url,
                 "content": f"Failed to retrieve the page. Error: {str(e)}",
-                "description": ""
+                "description": "",
             }
         except json.JSONDecodeError as e:
             return {
                 "title": title if title else url,
                 "url": url,
                 "content": f"Failed to parse JSON response. Error: {str(e)}",
-                "description": ""
+                "description": "",
             }
         except Exception as e:
             return {
                 "title": title if title else url,
                 "url": url,
                 "content": f"Unexpected error occurred. Error: {str(e)}",
-                "description": ""
+                "description": "",
             }
 
     def extract_title(self, text):
@@ -184,11 +194,11 @@ class HelperFunctions:
         if len(words) <= token_limit:
             return text
 
-        truncated_text = ' '.join(words[:token_limit])
-        
+        truncated_text = " ".join(words[:token_limit])
+
         if len(words) > token_limit:
-            truncated_text += '...'
-        
+            truncated_text += "..."
+
         return truncated_text
 
 
@@ -270,7 +280,7 @@ class Tools:
         self.session = aiohttp.ClientSession(
             connector=connector,
             timeout=aiohttp.ClientTimeout(total=30),
-            headers=self.headers
+            headers=self.headers,
         )
         self.functions = HelperFunctions(session=self.session)
 
@@ -282,8 +292,11 @@ class Tools:
         """
         Search the web and get the content of the relevant pages. Search for unknown knowledge, news, info, public contact info, weather, etc.
         :params query: Web Query used in search engine.
+        :params date: The current date.
         :return: The content of the pages in json format.
         """
+        now = datetime.datetime.now()
+        curr_date = now.strftime("%Y-%m-%d")
         try:
             emitter = EventEmitter(__event_emitter__)
 
@@ -302,6 +315,7 @@ class Tools:
 
             params = {
                 "q": query,
+                "date": curr_date,
                 "format": "json",
                 "number_of_results": self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO,
             }
@@ -344,7 +358,10 @@ class Tools:
                             search_results_json.append(result_json)
                         except (TypeError, ValueError):
                             continue
-                        if len(search_results_json) >= self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO:
+                        if (
+                            len(search_results_json)
+                            >= self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO
+                        ):
                             break
 
                 if self.valves.CITATION_LINKS and __event_emitter__:
@@ -379,13 +396,17 @@ class Tools:
                         scrape_results_json.append(result_json)
                     except (TypeError, ValueError):
                         continue
-                    if len(scrape_results_json) >= self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO:
+                    if (
+                        len(scrape_results_json)
+                        >= self.valves.SEARXNG_RETURNED_SCRAPED_PAGES_NO
+                    ):
                         break
 
             return json.dumps(scrape_results_json, ensure_ascii=False)
-        
+
         except Exception as e:
             raise e
+
 
 # async def main():
 #     tools = Tools()
