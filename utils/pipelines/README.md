@@ -1,0 +1,1 @@
+These files are simply local copies of https://github.com/open-webui/pipelines/tree/main/utils/pipelines. They are here for local development purposes.
