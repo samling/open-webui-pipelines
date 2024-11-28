@@ -7,37 +7,38 @@ license: MIT
 description: A manifold pipe that uses LiteLLM.
 """
 
-from typing import List, Union, Generator, Iterator, AsyncGenerator
+from typing import Dict, List, AsyncGenerator, Union
 from pprint import pformat
 from pydantic import BaseModel, Field
-from functools import cache
+from functools import lru_cache
 import aiohttp
 import json
+import logging
 import os
 import requests
 
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
-@cache
-def load_json_dict(user_value: str) -> dict:
+
+@lru_cache(maxsize=128)
+def load_json(user_value: str, as_list: bool = False) -> Union[Dict, List]:
     user_value = user_value.strip()
     if not user_value:
-        return {}
-    loaded = json.loads(user_value)
-    assert isinstance(loaded, dict), f"json is not a dict but '{type(loaded)}'"
-    return loaded
-
-
-@cache
-def load_json_list(user_value: str) -> list:
-    user_value = user_value.strip()
-    if not user_value:
-        return []
-    loaded = json.loads(user_value)
-    assert isinstance(loaded, list), f"json is not a list but '{type(loaded)}'"
-    assert all(
-        isinstance(elem, str) for elem in loaded
-    ), f"List contained non strings elements: '{loaded}'"
-    return loaded
+        return [] if as_list else {}
+    try:
+        loaded = json.loads(user_value)
+        if as_list:
+            if not isinstance(loaded, list) or not all(
+                isinstance(elem, str) for elem in loaded
+            ):
+                raise TypeError("Expected a list of strings.")
+        elif not isinstance(loaded, dict):
+            raise TypeError("Expected a dictionary.")
+        return loaded
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.error(f"Error loading JSON: {e}, Value: {user_value}")
+        return [] if as_list else {}
 
 
 class Pipe:
@@ -63,24 +64,8 @@ class Pipe:
         pass
 
     def __init__(self):
-        # You can also set the pipelines that are available in this pipeline.
-        # Set manifold to True if you want to use this pipeline as a manifold.
-        # Manifold pipelines can have multiple pipelines.
         self.type = "manifold"
-
-        # self.id = "litellm_manifold"
-
-        # Optionally, you can set the name of the manifold pipeline.
-        # self.name = "Async: "
-
-        # Initialize rate limits
         self.valves = self.Valves()
-
-        self.debug_prefix = "DEBUG:    " + __name__ + " -"
-        pass
-
-    async def log(self, message: str):
-        print(f"{self.debug_prefix} {message}")
 
     async def _stream_response(self, response):
         async for line in response.content:
@@ -151,33 +136,26 @@ class Pipe:
         return accumulated_content
 
     def pipes(self):
-        headers = {"Content-Type": "application/json"}
-        if self.valves.LITELLM_API_KEY:
-            headers["Authorization"] = f"Bearer {self.valves.LITELLM_API_KEY}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.valves.LITELLM_API_KEY}",
+        }
 
-        if self.valves.LITELLM_BASE_URL:
-            try:
-                r = requests.get(
-                    f"{self.valves.LITELLM_BASE_URL}/v1/models", headers=headers
-                )
-                models = r.json()
-                return [
-                    {
-                        "id": model["id"],
-                        "name": model["name"] if "name" in model else model["id"],
-                    }
-                    for model in models["data"]
-                ]
-            except Exception as e:
-                print(f"Error fetching models from LiteLLM: {e}")
-                return [
-                    {
-                        "id": "error",
-                        "name": "Could not fetch models from LiteLLM, please update the URL in the valves.",
-                    },
-                ]
-        else:
-            print("LITELLM_BASE_URL not set. Please configure it in the valves.")
+        try:
+            r = requests.get(
+                f"{self.valves.LITELLM_BASE_URL}/v1/models", headers=headers
+            )
+            r.raise_for_status()
+            models = r.json()
+            return [
+                {
+                    "id": model["id"],
+                    "name": model["name"] if "name" in model else model["id"],
+                }
+                for model in models.get("data", [])
+            ]
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erorr fetching models from LiteLLM: {e}")
             return []
 
     async def _build_metadata(self, __user__, __metadata__):
@@ -187,32 +165,13 @@ class Pipe:
             "session_id": __metadata__.get("chat_id"),
         }
 
-        try:
-            extra_metadata = load_json_dict(self.valves.EXTRA_METADATA)
-            if extra_metadata:
-                for k, v in extra_metadata.items():
-                    if k in __metadata__:
-                        if all(isinstance(x, list) for x in (v, __metadata__[k])):
-                            __metadata__[k].extend(v)
-                        elif isinstance(__metadata__[k], list):
-                            __metadata__[k].append(v)
-                        elif isinstance(v, list):
-                            __metadata__[k] = [__metadata__[k]] + v
-                    else:
-                        __metadata__[k] = v
+        extra_metadata = load_json(self.valves.EXTRA_METADATA)
+        __metadata__.update(extra_metadata)
 
-                if self.valves.LITELLM_PIPELINE_DEBUG:
-                    await self.log(f"Set additional metadata: {__metadata__}")
-
-            extra_tags = load_json_list(self.valves.EXTRA_TAGS)
-            if extra_tags:
-                metadata["tags"].update(extra_tags)
-                await self.log(f"Updated tags: {metadata['tags']}")
-
-        except Exception as e:
-            await self.log(f"Error processing metadata or tags: {e}")
-
+        extra_tags = load_json(self.valves.EXTRA_TAGS, as_list=True)
+        metadata["tags"].update(extra_tags)
         metadata["tags"] = list(metadata["tags"])
+
         return metadata
 
     async def _build_completion_payload(
@@ -220,9 +179,13 @@ class Pipe:
     ) -> dict:
         # Required parameters
         payload = {
-            "model": body["model"].split(".", 1)[1] if "." in body["model"] else body["model"],
+            "model": (
+                body["model"].split(".", 1)[1]
+                if "." in body["model"]
+                else body["model"]
+            ),
             "messages": body.get("messages", []),
-            "stream": True,
+            "stream": True
         }
 
         # Optional parameters with their default values
@@ -278,12 +241,17 @@ class Pipe:
                     json=payload,
                     headers=headers,
                 ) as response:
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
 
-                    if body["stream"]:
-                        async for chunk in self._stream_response(response):
-                            yield chunk
-                    else:
-                        yield await self._get_response(response)
+                        if body["stream"]:
+                            async for chunk in self._stream_response(response):
+                                yield chunk
+                        else:
+                            yield await self._get_response(response)
+                    except aiohttp.ClientError as e:
+                        logger.error(f"Erorr during request: {e}")
+                        yield f"Error: {e}"
         except Exception as e:
-            print(f"Error during request: {e}")
+            logger.exception(f"Unexpected error in pipe: {e}")
+            print(f"Error: {e}")
