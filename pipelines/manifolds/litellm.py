@@ -9,7 +9,9 @@ description: A manifold pipeline that uses LiteLLM.
 
 from typing import List, Union, Generator, Iterator
 from schemas import OpenAIChatMessage
+from pprint import pformat
 from pydantic import BaseModel
+import aiohttp
 import requests
 import os
 
@@ -34,7 +36,7 @@ class Pipeline:
         # self.id = "litellm_manifold"
 
         # Optionally, you can set the name of the manifold pipeline.
-        self.name = "LiteLLM: "
+        # self.name = "LiteLLM: "
 
         # Initialize rate limits
         self.valves = self.Valves(
@@ -100,7 +102,11 @@ class Pipeline:
             return []
 
     def pipe(
-        self, user_message: str, model_id: str, messages: List[dict], body: dict
+        self,
+        user_message: str,
+        model_id: str,
+        messages: List[dict],
+        body: dict
     ) -> Union[str, Generator, Iterator]:
         if "user" in body:
             print("######################################")
@@ -113,7 +119,15 @@ class Pipeline:
             headers["Authorization"] = f"Bearer {self.valves.LITELLM_API_KEY}"
 
         try:
-            payload = {**body, "model": model_id, "user": body["user"]["id"]}
+            print(f"Body: {pformat(body)}")
+            payload = {
+                **body,
+                "model": model_id,
+                "user": body["user"]["id"],
+                "metadata": {
+                    "tags": ["open-webui"],
+                }
+            }
             payload.pop("chat_id", None)
             payload.pop("user", None)
             payload.pop("title", None)
