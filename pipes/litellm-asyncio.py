@@ -7,7 +7,7 @@ license: MIT
 description: A manifold pipe that uses LiteLLM.
 """
 
-from typing import Dict, List, AsyncGenerator, Union
+from typing import Dict, List, AsyncGenerator, Union, Callable, Any, Awaitable
 from pprint import pformat
 from pydantic import BaseModel, Field
 from functools import lru_cache
@@ -17,9 +17,14 @@ import logging
 import os
 import requests
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
-
 
 @lru_cache(maxsize=128)
 def load_json(user_value: str, as_list: bool = False) -> Union[Dict, List]:
@@ -39,7 +44,6 @@ def load_json(user_value: str, as_list: bool = False) -> Union[Dict, List]:
     except (json.JSONDecodeError, TypeError) as e:
         logger.error(f"Error loading JSON: {e}, Value: {user_value}")
         return [] if as_list else {}
-
 
 class Pipe:
     class Valves(BaseModel):
@@ -66,16 +70,26 @@ class Pipe:
     def __init__(self):
         self.type = "manifold"
         self.valves = self.Valves()
+        self.current_citations = set()
+
+        if self.valves.LITELLM_PIPELINE_DEBUG:
+            logger.setLevel(logging.DEBUG)
+            logger.debug("Debug logging is enabled for LiteLLM pipe")
+
+    def _enable_debug(self):
+        if not logger.isEnabledFor(logging.DEBUG):
+            logger.setLevel(logging.DEBUG)
+            logger.debug("Debug logging is enabled for LiteLLM pipe")
 
     async def _stream_response(self, response):
+        self.current_citations.clear()
         async for line in response.content:
             if not line:
                 continue
 
             try:
                 line = line.decode("utf-8").strip()
-                if self.valves.LITELLM_PIPELINE_DEBUG:
-                    await self.log(f"Raw line: {line}")
+                # logger.debug(f"Raw line: {line}") # this causes a lot of log spam
 
                 if not line or line == "data: ":
                     continue
@@ -91,29 +105,28 @@ class Pipe:
                     if "choices" in json_data and len(json_data["choices"]):
                         delta = json_data["choices"][0].get("delta", {})
                         if "content" in delta:
-                            if self.valves.LITELLM_PIPELINE_DEBUG:
-                                await self.log(f"Yielding content: {delta['content']}")
                             yield json_data
+                    if "citations" in json_data:
+                        if isinstance(json_data["citations"], list):
+                            self.current_citations.update(json_data["citations"])
+                        elif isinstance(json_data["citations"], str):
+                            self.current_citations.add(json_data["citations"])
                 except json.JSONDecodeError as je:
-                    if self.valves.LITELLM_PIPELINE_DEBUG:
-                        await self.log(f"JSON decode error for line: {line}")
-                        await self.log(f"Error details: {str(je)}")
+                    logger.error(f"JSON decode error for line: {line}")
+                    logger.error(f"Error details: {str(je)}")
                     continue
 
             except UnicodeDecodeError as ue:
-                if self.valves.LITELLM_PIPELINE_DEBUG:
-                    await self.log(f"Unicode decode error: {str(ue)}")
+                logger.error(f"Unicode decode error: {str(ue)}")
                 continue
 
             except Exception as e:
-                if self.valves.LITELLM_PIPELINE_DEBUG:
-                    await self.log(f"Unexpected error processing line: {str(e)}")
+                logger.exception(f"Unexpected error processing line: {str(e)}")
                 continue
 
     async def _get_response(self, response):
-        if self.valves.LITELLM_PIPELINE_DEBUG:
-            await self.log(f"Response status: {response.status}")
-            await self.log(f"Response headers: {response.headers}")
+        logger.debug(f"Response status: {response.status}")
+        logger.debug(f"Response headers: {response.headers}")
 
         accumulated_content = ""
 
@@ -130,8 +143,7 @@ class Pipe:
                     except json.JSONDecodeError:
                         continue
 
-        if self.valves.LITELLM_PIPELINE_DEBUG:
-            await self.log(f"Accumulated content: {accumulated_content}")
+        logger.debug(f"Accumulated content: {accumulated_content}")
 
         return accumulated_content
 
@@ -147,15 +159,23 @@ class Pipe:
             )
             r.raise_for_status()
             models = r.json()
-            return [
+
+
+            model_list = [
                 {
                     "id": model["id"],
                     "name": model["name"] if "name" in model else model["id"],
                 }
                 for model in models.get("data", [])
             ]
+
+            # for model in model_list:
+            #     logger.debug(f"Processed model - id: {model['id']}, name: {model['name']}")
+            
+            return model_list
+
         except requests.exceptions.RequestException as e:
-            logger.error(f"Erorr fetching models from LiteLLM: {e}")
+            logger.error(f"Error fetching models from LiteLLM: {e}")
             return []
 
     async def _build_metadata(self, __user__, __metadata__):
@@ -178,14 +198,18 @@ class Pipe:
         self, body: dict, __user__: dict, metadata: dict
     ) -> dict:
         # Required parameters
+        model_parts = body["model"].split(".", 1)
+        provider = model_parts[0] if len(model_parts) > 1 else None
+        model = model_parts[1] if len(model_parts) > 1 else body["model"]
+
+        logger.debug(f"Model provider: {provider}")
+        logger.debug(f"Model name: {model}")
+
         payload = {
-            "model": (
-                body["model"].split(".", 1)[1]
-                if "." in body["model"]
-                else body["model"]
-            ),
+            "model": model,
             "messages": body.get("messages", []),
-            "stream": True
+            "stream": True,
+            "drop_params": True
         }
 
         # Optional parameters with their default values
@@ -210,30 +234,29 @@ class Pipe:
         if metadata:
             payload["metadata"] = metadata
 
-        if self.valves.LITELLM_PIPELINE_DEBUG:
-            await self.log(f"Built payload with {len(payload)} parameters")
+        logger.debug(f"Built payload with {len(payload)} parameters")
 
         return payload
 
     async def pipe(
-        self, body: dict, __user__: dict, __metadata__: dict
+        self, body: dict, __user__: dict, __metadata__: dict, __event_emitter__: Callable[[Any], Awaitable[None]],
     ) -> AsyncGenerator[str, None]:
-        print(__metadata__)
+
+        if self.valves.LITELLM_PIPELINE_DEBUG:
+            self._enable_debug()
+            logger.debug("Starting pipe execution")
+            logger.debug(f"Metadata: {__metadata__}")
+            logger.debug(f"Body: {body}")
 
         headers = {"Content-Type": "application/json"}
         if self.valves.LITELLM_API_KEY:
             headers["Authorization"] = f"Bearer {self.valves.LITELLM_API_KEY}"
 
-        if self.valves.LITELLM_PIPELINE_DEBUG:
-            await self.log(f"Metadata: {__metadata__}")
-            await self.log(f"Body: {body}")
-
         try:
             metadata = await self._build_metadata(__user__, __metadata__)
             payload = await self._build_completion_payload(body, __user__, metadata)
 
-            if self.valves.LITELLM_PIPELINE_DEBUG:
-                await self.log(f"Final payload: {json.dumps(payload, indent=2)}")
+            logger.debug(f"Final payload: {json.dumps(payload, indent=2)}")
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -248,9 +271,23 @@ class Pipe:
                             async for chunk in self._stream_response(response):
                                 yield chunk
                         else:
-                            yield await self._get_response(response)
+                            content = await self._get_response(response)
+                            yield content
+
+                        for i, url in enumerate(list(self.current_citations)):
+                            await __event_emitter__(
+                                {
+                                    "type": "citation",
+                                    "data": {
+                                        "source": {"name": url},
+                                        "document": [url],
+                                        "metadata": [{"source": url}],
+                                    },
+                                },
+                            )
+
                     except aiohttp.ClientError as e:
-                        logger.error(f"Erorr during request: {e}")
+                        logger.error(f"Error during request: {e}")
                         yield f"Error: {e}"
         except Exception as e:
             logger.exception(f"Unexpected error in pipe: {e}")
