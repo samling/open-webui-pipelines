@@ -1,57 +1,52 @@
 """
-title: LiteLLM Manifold Pipeline
+title: LiteLLM Manifold Pipe
 author: open-webui
 date: 2024-05-30
 version: 1.0.1
 license: MIT
-description: A manifold pipeline that uses LiteLLM.
-requirements: litellm, langfuse
+description: A manifold pipe that uses LiteLLM.
+requirements: litellm
 """
 
-from functools import cache
-from langfuse.decorators import langfuse_context, observe
-from typing import List, Union, Generator, Iterator, AsyncGenerator
+from typing import Dict, List, AsyncGenerator, Union
 from pprint import pformat
 from pydantic import BaseModel, Field
-import asyncio
-import litellm
-from litellm.integrations.custom_logger import CustomLogger
+from functools import lru_cache
+import aiohttp
 import json
+import litellm
+import logging
 import os
 import requests
 
-@cache
-def load_json_dict(user_value: str) -> dict:
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+@lru_cache(maxsize=128)
+def load_json(user_value: str, as_list: bool = False) -> Union[Dict, List]:
     user_value = user_value.strip()
     if not user_value:
-        return {}
-    loaded = json.loads(user_value)
-    assert isinstance(loaded, dict), f"json is not a dict but '{type(loaded)}'"
-    return loaded
+        return [] if as_list else {}
+    try:
+        loaded = json.loads(user_value)
+        if as_list:
+            if not isinstance(loaded, list) or not all(
+                isinstance(elem, str) for elem in loaded
+            ):
+                raise TypeError("Expected a list of strings.")
+        elif not isinstance(loaded, dict):
+            raise TypeError("Expected a dictionary.")
+        return loaded
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.error(f"Error loading JSON: {e}, Value: {user_value}")
+        return [] if as_list else {}
 
-@cache
-def load_json_list(user_value: str) -> list:
-    user_value = user_value.strip()
-    if not user_value:
-        return []
-    loaded = json.loads(user_value)
-    assert isinstance(loaded, list), f"json is not a list but '{type(loaded)}'"
-    assert all(isinstance(elem, str) for elem in loaded), f"List contained non strings elements: '{loaded}'"
-    return loaded
-
-
-class LogHandler(CustomLogger):
-    #### ASYNC #### 
-    
-    async def async_log_stream_event(self, kwargs, response_obj, start_time, end_time):
-        print(f"On Async Streaming")
-
-    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-        print(kwargs["litellm_params"]["metadata"])
-        print(f"On Async Success")
-
-    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-        print(f"On Async Failure")
 
 class Pipe:
     class Valves(BaseModel):
@@ -64,141 +59,231 @@ class Pipe:
             description="Your LiteLLM master key.",
         )
         LITELLM_PIPELINE_DEBUG: bool = Field(
-            default=True,
-            description="Enable debugging."
+            default=False, description="Enable debugging."
         )
-        LANGFUSE_PUBLIC_KEY: str = Field(
-            default="pk-fake-key",
-            description="Public key for Langfuse.",
+        EXTRA_METADATA: str = Field(
+            default="", description='Additional metadata, e.g. {"key": "value"}'
         )
-        LANGFUSE_PRIVATE_KEY: str = Field(
-            default="sk-fake-key",
-            description="Private key for Langfuse.",
-        )
-        LANGFUSE_HOST: str = Field(
-            default="http://langfuse.langfuse:3000",
-            description="Base URL for Langfuse.",
+        EXTRA_TAGS: str = Field(
+            default='["open-webui"]',
+            description='A list of tags to apply to requests, e.g. ["open-webui"]',
         )
         pass
 
     def __init__(self):
-        # You can also set the pipelines that are available in this pipeline.
-        # Set manifold to True if you want to use this pipeline as a manifold.
-        # Manifold pipelines can have multiple pipelines.
         self.type = "manifold"
-
-        # self.id = "litellm_manifold"
-
-        # Optionally, you can set the name of the manifold pipeline.
-        # self.name = "Async: "
-
-        # Initialize rate limits
         self.valves = self.Valves()
+        self.name = "litellm: "
 
-        self.debug_prefix = "DEBUG:    " + __name__ + " -"
-        pass
+        if self.valves.LITELLM_PIPELINE_DEBUG:
+            logger.setLevel(logging.DEBUG)
+            logger.debug("Debug logging is enabled for LiteLLM pipe")
 
-    def pipes(self):
-
-        headers = {"Content-Type": "application/json"}
-        if self.valves.LITELLM_API_KEY:
-            headers["Authorization"] = f"Bearer {self.valves.LITELLM_API_KEY}"
-
-        os.environ["LANGFUSE_PUBLIC_KEY"] = self.valves.LANGFUSE_PUBLIC_KEY
-        os.environ["LANGFUSE_PRIVATE_KEY"] = self.valves.LANGFUSE_PRIVATE_KEY
-        os.environ["LANGFUSE_HOST"] = self.valves.LANGFUSE_HOST
-
-        if self.valves.LITELLM_BASE_URL:
-            try:
-                r = requests.get(
-                    f"{self.valves.LITELLM_BASE_URL}/v1/models", headers=headers
-                )
-                models = r.json()
-                return [
-                    {
-                        "id": model["id"],
-                        "name": model["name"] if "name" in model else model["id"],
-                    }
-                    for model in models["data"]
-                ]
-            except Exception as e:
-                print(f"Error fetching models from LiteLLM: {e}")
-                return [
-                    {
-                        "id": "error",
-                        "name": "Could not fetch models from LiteLLM, please update the URL in the valves.",
-                    },
-                ]
-        else:
-            print("LITELLM_BASE_URL not set. Please configure it in the valves.")
-            return []
+    def _enable_debug(self):
+        if not logger.isEnabledFor(logging.DEBUG):
+            logger.setLevel(logging.DEBUG)
+            logger.debug("Debug logging is enabled for LiteLLM pipe")
 
     async def _stream_response(self, response):
         async for line in response.content:
-            if line:
-                line = line.decode('utf-8')
+            if not line:
+                continue
+
+            try:
+                line = line.decode("utf-8").strip()
+                if self.valves.LITELLM_PIPELINE_DEBUG:
+                    logger.debug(f"Raw line: {line}")
+
                 if not line or line == "data: ":
                     continue
 
                 if line.startswith("data: "):
                     line = line[6:]
-                
+
+                if line == "[DONE]":
+                    continue
+
                 try:
                     json_data = json.loads(line)
                     if "choices" in json_data and len(json_data["choices"]):
                         delta = json_data["choices"][0].get("delta", {})
                         if "content" in delta:
                             yield json_data
-                except json.JSONDecodeError:
-                    print(f"Failed to parse JSON: {line}")
+                except json.JSONDecodeError as je:
+                    logger.error(f"JSON decode error for line: {line}")
+                    logger.error(f"Error details: {str(je)}")
                     continue
 
+            except UnicodeDecodeError as ue:
+                logger.error(f"Unicode decode error: {str(ue)}")
+                continue
+
+            except Exception as e:
+                logger.exception(f"Unexpected error processing line: {str(e)}")
+                continue
+
     async def _get_response(self, response):
-        return await response.json()
+        logger.debug(f"Response status: {response.status}")
+        logger.debug(f"Response headers: {response.headers}")
 
-    logHandler = LogHandler()
-    litellm.callbacks = [logHandler]
+        accumulated_content = ""
 
-    @observe()
-    async def pipe(
-        self,
-        body: dict,
-        __user__: dict,
-        __metadata__: dict
-    ) -> AsyncGenerator[str, None]:
-        if self.valves.LITELLM_PIPELINE_DEBUG:
-            print(f"{self.debug_prefix} Metadata: {__metadata__}")
-            print(f"{self.debug_prefix} Body: {body}")
+        async for line in response.content:
+            if line:
+                line = line.decode("utf-8")
+                if line.startswith("data: "):
+                    try:
+                        json_data = json.loads(line[6:])  # Remove 'data:' prefix
+                        if "choices" in json_data and json_data["choices"]:
+                            delta = json_data["choices"][0].get("delta", {})
+                            if "content" in delta:
+                                accumulated_content += delta["content"]
+                    except json.JSONDecodeError:
+                        continue
+
+        logger.debug(f"Accumulated content: {accumulated_content}")
+
+        return accumulated_content
+
+    def pipes(self):
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.valves.LITELLM_API_KEY}",
+        }
 
         try:
-            curr_trace_id = langfuse_context.get_current_trace_id()
-            print(f"{self.debug_prefix} Trace ID: {curr_trace_id}")
+            r = requests.get(
+                f"{self.valves.LITELLM_BASE_URL}/v1/models", headers=headers
+            )
+            r.raise_for_status()
+            models = r.json()
 
-            model = body["model"].split(".")[-1]
-            metadata = {
-                "tags": ["open-webui"],
-                "chat_id": __metadata__.get("chat_id"),
-                "user_id": __user__.get("id"),
-                "user_name": __user__.get("name"),
-            }
+
+            model_list = [
+                {
+                    "id": model["id"],
+                    "name": model["name"] if "name" in model else model["id"],
+                }
+                for model in models.get("data", [])
+            ]
+
+            for model in model_list:
+                logger.debug(f"Processed model - id: {model['id']}, name: {model['name']}")
+            
+            return model_list
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching models from LiteLLM: {e}")
+            return []
+
+    async def _build_metadata(self, __user__, __metadata__):
+        metadata = {
+            "tags": set(),
+            "trace_user_id": __user__.get("name"),
+            "session_id": __metadata__.get("chat_id"),
+        }
+
+        extra_metadata = load_json(self.valves.EXTRA_METADATA)
+        __metadata__.update(extra_metadata)
+
+        extra_tags = load_json(self.valves.EXTRA_TAGS, as_list=True)
+        metadata["tags"].update(extra_tags)
+        metadata["tags"] = list(metadata["tags"])
+
+        return metadata
+
+    async def _build_completion_payload(
+        self, body: dict, __user__: dict, metadata: dict
+    ) -> dict:
+        # Required parameters
+        model_parts = body["model"].split(".", 1)
+        provider = model_parts[0] if len(model_parts) > 1 else None
+        model = model_parts[1] if len(model_parts) > 1 else body["model"]
+
+        logger.debug(f"Model provider: {provider}")
+        logger.debug(f"Model name: {model}")
+
+        payload = {
+            "model": model,
+            "messages": body.get("messages", []),
+            "stream": True
+        }
+
+        # Optional parameters with their default values
+        optional_openai_params = {
+            "seed",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "frequency_penalty",
+            "stop",
+        }
+
+        # Only add parameters that differ from defaults
+        for param in optional_openai_params:
+            if param in body:
+                payload[param] = body[param]
+
+        # Add user and metadata if they exist
+        if __user__.get("id"):
+            payload["user"] = __user__["id"]
+
+        if metadata:
+            payload["metadata"] = metadata
+
+        logger.debug(f"Built payload with {len(payload)} parameters")
+
+        return payload
+
+    async def pipe(
+        self, body: dict, __user__: dict, __metadata__: dict
+    ) -> AsyncGenerator[str, None]:
+
+        if self.valves.LITELLM_PIPELINE_DEBUG:
+            self._enable_debug()
+            logger.debug("Starting pipe execution")
+            logger.debug(f"Metadata: {__metadata__}")
+            logger.debug(f"Body: {body}")
+
+        headers = {"Content-Type": "application/json"}
+        if self.valves.LITELLM_API_KEY:
+            headers["Authorization"] = f"Bearer {self.valves.LITELLM_API_KEY}"
+
+        try:
+            metadata = await self._build_metadata(__user__, __metadata__)
+
+            model_parts = body["model"].split(".", 1)
+            provider = model_parts[0] if len(model_parts) > 1 else None
+            model = model_parts[1] if len(model_parts) > 1 else body["model"]
+
+            logger.debug(f"Model provider: {provider}")
+            logger.debug(f"Model name: {model}")
+
             response = await litellm.acompletion(
                 model=model,
                 messages=body.get("messages", []),
                 stream=body.get("stream", True),
                 api_key=self.valves.LITELLM_API_KEY,
                 base_url=self.valves.LITELLM_BASE_URL,
-                max_tokens=body.get("max_tokens", None),
-                user=__user__.get("name"),
+                # user=__user__.get("name"),
                 metadata=metadata
             )
 
-            if body.get("stream", True):
+
+            if body["stream"]:
                 async for chunk in response:
                     yield chunk
             else:
                 content = response.choices[0].message.content
                 yield content
 
+
+            #if body["stream"]:
+            #    async for chunk in self._stream_response(response):
+            #        yield chunk
+            #else:
+            #    yield await self._get_response(response)
+
         except Exception as e:
-            print(f"Error during request: {e}")
-            yield {"error": str(e)}
+            logger.exception(f"Unexpected error in pipe: {e}")
+            print(f"Error: {e}")
