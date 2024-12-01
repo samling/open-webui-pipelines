@@ -214,7 +214,7 @@ class Pipe:
                 async with session.get(url, timeout=2) as response:
                     if response.status == 200:
                         html = await response.text()
-                        soup = BeautifulSoup(html, 'html.parser')
+                        soup = BeautifulSoup(html, "html.parser")
                         title = soup.title.string if soup.title else None
                         if title:
                             return title.strip()
@@ -223,7 +223,6 @@ class Pipe:
 
         # fall back to URL
         return url
-
 
     async def _build_citation_list(self) -> str:
         """
@@ -241,7 +240,6 @@ class Pipe:
             formatted_citations.append(f"[{i}] [{title}]({url})")
 
         return "\n".join(formatted_citations)
-
 
     async def _stream_response(self, response):
         """
