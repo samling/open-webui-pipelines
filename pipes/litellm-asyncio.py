@@ -306,6 +306,11 @@ class Pipe:
                             delta = json_data["choices"][0].get("delta", {})
                             if "content" in delta:
                                 accumulated_content += delta["content"]
+                        if "citations" in json_data:
+                            if isinstance(json_data["citations"], list):
+                                self.current_citations.update(json_data["citations"])
+                            elif isinstance(json_data["citations"], str):
+                                self.current_citations.add(json_data["citations"])
                     except json.JSONDecodeError:
                         continue
 
