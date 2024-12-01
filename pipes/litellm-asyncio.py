@@ -371,12 +371,10 @@ class Pipe:
                     try:
                         response.raise_for_status()
 
-                        is_owui_title_request = False
-                        if body.get("messages") and len(body["messages"]) > 0:
-                            first_message = body["messages"][0].get("content", "")
-                            is_owui_title_request = first_message.startswith(
-                                "Create a concise, 3-5 word title with an emoji as a title for the chat history"
-                            )
+                        is_owui_title_gen_task = False
+                        if __metadata__.get("task") and len(__metadata__["task"]) > 0:
+                            if __metadata__["task"] == "title_generation":
+                                is_owui_title_gen_task = True
 
                         if body["stream"]:
                             async for chunk in self._stream_response(response):
@@ -387,7 +385,7 @@ class Pipe:
 
                         # Ensure we have citations to emit; don't add them to the response
                         # to the prompt that generates titles.
-                        if self.current_citations and not is_owui_title_request:
+                        if self.current_citations and not is_owui_title_gen_task:
                             formatted_citations = await self._build_citation_list()
                             yield f"\n\n{formatted_citations}"
 
