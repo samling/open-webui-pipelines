@@ -246,6 +246,7 @@ class Pipe:
         Handle streaming responses.
         """
         self.current_citations.clear()
+
         async for line in response.content:
             if not line:
                 continue
@@ -291,8 +292,7 @@ class Pipe:
         """
         Handle non-streaming responses.
         """
-        logger.debug(f"Response status: {response.status}")
-        logger.debug(f"Response headers: {response.headers}")
+        self.current_citations.clear()
 
         accumulated_content = ""
 
@@ -371,6 +371,13 @@ class Pipe:
                     try:
                         response.raise_for_status()
 
+                        is_owui_title_request = False
+                        if body.get("messages") and len(body["messages"]) > 0:
+                            first_message = body["messages"][0].get("content", "")
+                            is_owui_title_request = first_message.startswith(
+                                "Create a concise, 3-5 word title with an emoji as a title for the chat history"
+                            )
+
                         if body["stream"]:
                             async for chunk in self._stream_response(response):
                                 yield chunk
@@ -378,8 +385,9 @@ class Pipe:
                             content = await self._get_response(response)
                             yield content
 
-                        # Ensure we have citations to emit
-                        if self.current_citations:
+                        # Ensure we have citations to emit; don't add them to the response
+                        # to the prompt that generates titles.
+                        if self.current_citations and not is_owui_title_request:
                             formatted_citations = await self._build_citation_list()
                             yield f"\n\n{formatted_citations}"
 
