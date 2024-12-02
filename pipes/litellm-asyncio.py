@@ -5,19 +5,18 @@ date: 2024-05-30
 version: 1.0.1
 license: MIT
 description: A manifold pipe that uses LiteLLM.
-requirements: beautifulsoup4
+requirements: beautifulsoup4, yt_dlp
 """
 
 from bs4 import BeautifulSoup
-from typing import Dict, List, AsyncGenerator, Union, Callable, Any, Awaitable
+from functools import lru_cache
 from pprint import pformat
 from pydantic import BaseModel, Field
-from functools import lru_cache
+from typing import Dict, List, AsyncGenerator, Union, Callable, Any, Awaitable
 import aiohttp
-import datetime
 import json
 import logging
-import os
+import re
 import requests
 
 logging.basicConfig(
@@ -47,29 +46,49 @@ def load_json(user_value: str, as_list: bool = False) -> Union[Dict, List]:
         logger.error(f"Error loading JSON: {e}, Value: {user_value}")
         return [] if as_list else {}
 
+class EventEmitter:
+    def __init__(self, event_emitter: Callable[[dict], Any] = None):
+        self.event_emitter = event_emitter
+
+    async def emit(self, description="Unknown State", status="in_progress", done=False):
+        if self.event_emitter:
+            await self.event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "status": status,
+                        "description": description,
+                        "done": done,
+                    },
+                }
+            )
 
 class Pipe:
     class Valves(BaseModel):
         LITELLM_BASE_URL: str = Field(
             default="http://litellm.litellm:4000",
-            description="Base URL for LiteLLM.",
+            description="(Required) Base URL for LiteLLM.",
         )
         LITELLM_API_KEY: str = Field(
             default="sk-fake-key",
-            description="Your LiteLLM master key.",
+            description="(Required) Your LiteLLM master key.",
         )
         LITELLM_PIPELINE_DEBUG: bool = Field(
-            default=False, description="Enable debugging."
+            default=False, description="(Optional) Enable debugging."
         )
         EXTRA_METADATA: str = Field(
-            default="", description='Additional metadata, e.g. {"key": "value"}'
+            default="", description='(Optional) Additional metadata, e.g. {"key": "value"}'
         )
         EXTRA_TAGS: str = Field(
             default='["open-webui"]',
-            description='A list of tags to apply to requests, e.g. ["open-webui"]',
+            description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
+        )
+        YOUTUBE_COOKIES_FILEPATH: str = Field(
+            default="",
+            description="(Optional) Path to cookies file from youtube.com to aid in title retrieval for citations."
         )
         PERPLEXITY_RETURN_CITATIONS: bool = Field(
-            default=True, description="Enable citation retrieval for Perplexity models."
+            default=True, description="(Optional) Enable citation retrieval for Perplexity models."
         )
         pass
 
@@ -178,10 +197,6 @@ class Pipe:
             "drop_params": True,
         }
 
-        if provider == "perplexity" and self.valves.PERPLEXITY_RETURN_CITATIONS:
-            payload["return_citations"] = True
-            logger.debug("Added return_citations for Perplexity models")
-
         # Optional parameters with their default values
         optional_openai_params = {
             "seed",
@@ -197,6 +212,24 @@ class Pipe:
             if param in body:
                 payload[param] = body[param]
 
+        # Provider-specific parameters
+        provider_params = dict({
+            "perplexity": {
+                "return_citations": self.valves.PERPLEXITY_RETURN_CITATIONS,
+            }
+        })
+
+        # Add provider-specific parameters if applicable
+        if provider in provider_params:
+            logger.debug(f"Adding {provider}-specific parameters")
+            for param_name, param_value in provider_params[provider].items():
+                if param_value is not None:
+                    payload[param_name] = param_value
+                    logger.debug(F"Added {param_name}={param_value} from valve settings")
+                elif param_name in body:
+                    payload[param_name] = body[param_name]
+                    logger.debug(f"Added {param_name}={param_value} from body")
+
         # Add user and metadata if they exist
         if __user__.get("id"):
             payload["user"] = __user__["id"]
@@ -209,20 +242,37 @@ class Pipe:
         return payload
 
     async def _get_url_title(self, url: str) -> str:
+        import yt_dlp as ytdl
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=2) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        soup = BeautifulSoup(html, "html.parser")
-                        title = soup.title.string if soup.title else None
-                        if title:
-                            return title.strip()
-        except:
-            pass
+            if "youtube.com" in url or "youtu.be" in url:
+                    ydl_opts = {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': True
+                    }
+                    if hasattr(self.valves, 'YOUTUBE_COOKIES_FILEPATH') and self.valves.YOUTUBE_COOKIES_FILEPATH:
+                        ydl_opts['cookiefile'] = self.valves.YOUTUBE_COOKIES_FILEPATH
 
-        # fall back to URL
-        return url
+                    try:
+                        with ytdl.YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(url, download=False)
+                            return f"YouTube - {info.get('title', url)}"
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve youtube title from url: {url}")
+            else:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=2) as response:
+                        if response.status == 200:
+                            html = await response.text()
+                            soup = BeautifulSoup(html, "html.parser")
+                            title = soup.title.string if soup.title else None
+                            if title:
+                                return title.strip()
+                        else:
+                            logger.warning(f"Failed to retrieve url {url} - status code {response.status}")
+        except Exception as e:
+            logger.warning(f"Failed to retrieve url: {url}")
+            return url
 
     async def _build_citation_list(self) -> str:
         """
@@ -357,6 +407,8 @@ class Pipe:
             headers["Authorization"] = f"Bearer {self.valves.LITELLM_API_KEY}"
 
         try:
+            emitter = EventEmitter(__event_emitter__)
+
             metadata = await self._build_metadata(__user__, __metadata__)
             payload = await self._build_completion_payload(body, __user__, metadata)
 
@@ -386,7 +438,13 @@ class Pipe:
                         # Ensure we have citations to emit; don't add them to the response
                         # to the prompt that generates titles.
                         if self.current_citations and not is_owui_title_gen_task:
+                            await emitter.emit(f"Formatting citations...")
                             formatted_citations = await self._build_citation_list()
+                            await emitter.emit(
+                                status="complete",
+                                description="",
+                                done=True,
+                            )
                             yield f"\n\n{formatted_citations}"
 
                     except aiohttp.ClientError as e:
