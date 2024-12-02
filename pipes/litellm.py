@@ -16,7 +16,6 @@ from typing import Dict, List, AsyncGenerator, Union, Callable, Any, Awaitable
 import aiohttp
 import json
 import logging
-import re
 import requests
 
 logging.basicConfig(
@@ -50,7 +49,18 @@ class EventEmitter:
     def __init__(self, event_emitter: Callable[[dict], Any] = None):
         self.event_emitter = event_emitter
 
-    async def emit(self, description="Unknown State", status="in_progress", done=False):
+    async def emit_message(self, content=""):
+        if self.event_emitter:
+            await self.event_emitter(
+                {
+                    "type": "message",
+                    "data": {
+                        "content": content
+                    }
+                }
+            )
+
+    async def emit_status(self, description="Unknown State", status="in_progress", done=False):
         if self.event_emitter:
             await self.event_emitter(
                 {
@@ -60,6 +70,40 @@ class EventEmitter:
                         "description": description,
                         "done": done,
                     },
+                }
+            )
+
+    async def emit_source(self, name: str, document: str, url: str, html: bool = True):
+        if self.event_emitter:
+            await self.event_emitter(
+                {
+                    "type": "source",
+                    "data": {
+                        "document": [document],
+                        "metadata": [
+                            {
+                                "source": name,
+                                "html": html
+                            }
+                        ],
+                        "source": {
+                            "name": name,
+                            "url": url
+                        }
+                    }
+                }
+            )
+
+    async def emit_citation(self, source: str, metadata: str, document: str):
+        if self.event_emitter:
+            await self.event_emitter(
+                {
+                    "type": "citation",
+                    "data": {
+                        "document": document,
+                        "metadata": metadata,
+                        "source": source
+                    }
                 }
             )
 
@@ -90,12 +134,17 @@ class Pipe:
         PERPLEXITY_RETURN_CITATIONS: bool = Field(
             default=True, description="(Optional) Enable citation retrieval for Perplexity models."
         )
+        PERPLEXITY_RETURN_IMAGES: bool = Field(
+            default=False, description="(Optional) Enable image retrieval for Perplexity models. Note: This is a beta feature."
+        )
+        PERPLEXITY_RETURN_RELATED_QUESTIONS: bool = Field(
+            default=False, description="(Optional) Enable related question retrieval for Perplexity models. Note: This is a beta feature."
+        )
         pass
 
     def __init__(self):
         self.type = "manifold"
         self.valves = self.Valves()
-        self.current_citations = set()
         self._model_list = None
 
         if self.valves.LITELLM_PIPELINE_DEBUG:
@@ -216,6 +265,8 @@ class Pipe:
         provider_params = dict({
             "perplexity": {
                 "return_citations": self.valves.PERPLEXITY_RETURN_CITATIONS,
+                "return_images": self.valves.PERPLEXITY_RETURN_IMAGES,
+                "return_related_questions": self.valves.PERPLEXITY_RETURN_RELATED_QUESTIONS,
             }
         })
 
@@ -274,29 +325,27 @@ class Pipe:
             logger.warning(f"Failed to retrieve url: {url}")
             return url
 
-    async def _build_citation_list(self) -> str:
+    async def _build_citation_list(self, citations: set) -> str:
         """
-        Take a list of citations and return it as a markup-formatted list:
-
-        [1] [title](url)
-        [2] [title](url)
-        (...)
+        Take a list of citations and return it as a list.
         """
-        logger.debug(self.current_citations)
-
-        formatted_citations = []
-        for i, url in enumerate(self.current_citations, start=1):
+        citations_list = []
+        for i, url in enumerate(citations, start=1):
             title = await self._get_url_title(url)
-            formatted_citations.append(f"[{i}] [{title}]({url})")
+            citation = {
+                "title": title,
+                "url": url,
+                "content": ""
+            }
+            citations_list.append(citation)
+            print(f"Appended citation: {citation}")
 
-        return "\n".join(formatted_citations)
+        return citations_list
 
     async def _stream_response(self, response):
         """
         Handle streaming responses.
         """
-        self.current_citations.clear()
-
         async for line in response.content:
             if not line:
                 continue
@@ -320,11 +369,6 @@ class Pipe:
                         delta = json_data["choices"][0].get("delta", {})
                         if "content" in delta:
                             yield json_data
-                    if "citations" in json_data:
-                        if isinstance(json_data["citations"], list):
-                            self.current_citations.update(json_data["citations"])
-                        elif isinstance(json_data["citations"], str):
-                            self.current_citations.add(json_data["citations"])
                 except json.JSONDecodeError as je:
                     logger.error(f"JSON decode error for line: {line}")
                     logger.error(f"Error details: {str(je)}")
@@ -338,12 +382,10 @@ class Pipe:
                 logger.exception(f"Unexpected error processing line: {str(e)}")
                 continue
 
-    async def _get_response(self, response):
+    async def _get_response(self, response, current_citations: set):
         """
         Handle non-streaming responses.
         """
-        self.current_citations.clear()
-
         accumulated_content = ""
 
         async for line in response.content:
@@ -358,9 +400,9 @@ class Pipe:
                                 accumulated_content += delta["content"]
                         if "citations" in json_data:
                             if isinstance(json_data["citations"], list):
-                                self.current_citations.update(json_data["citations"])
+                                current_citations.update(json_data["citations"])
                             elif isinstance(json_data["citations"], str):
-                                self.current_citations.add(json_data["citations"])
+                                current_citations.add(json_data["citations"])
                     except json.JSONDecodeError:
                         continue
 
@@ -391,6 +433,8 @@ class Pipe:
         """
         The main pipe through which requests flow.
         """
+
+        current_citations = set()
 
         if self.valves.LITELLM_PIPELINE_DEBUG:
             self._enable_debug()
@@ -430,22 +474,47 @@ class Pipe:
 
                         if body["stream"]:
                             async for chunk in self._stream_response(response):
+                                if "citations" in chunk:
+                                    if isinstance(chunk["citations"], list):
+                                        current_citations.update(chunk["citations"])
+                                    elif isinstance(chunk["citations"], str):
+                                        current_citations.add(chunk["citations"])
                                 yield chunk
                         else:
-                            content = await self._get_response(response)
+                            content = await self._get_response(response, current_citations)
                             yield content
 
                         # Ensure we have citations to emit; don't add them to the response
                         # to the prompt that generates titles.
-                        if self.current_citations and not is_owui_title_gen_task:
-                            await emitter.emit(f"Formatting citations...")
-                            formatted_citations = await self._build_citation_list()
-                            await emitter.emit(
+                        if current_citations and not is_owui_title_gen_task:
+                            await emitter.emit_status(f"Formatting citations...")
+
+                            citations = await self._build_citation_list(current_citations)
+
+                            # for i, citation in enumerate(citations, 1):
+                            #     document = (
+                            #         f"<div>"
+                            #         f"Some content here"
+                            #         f"</div>"
+                            #     )
+                            #     await emitter.emit_source(
+                            #         url=citation.get('url'),
+                            #         name=citation.get('title'),
+                            #         document=document
+                            #     )
+
+                            await emitter.emit_message(content=f"\n<details>\n<summary>Sources</summary>")
+                            for i, citation in enumerate(citations, 1):
+                                await emitter.emit_message(
+                                    content=f"\n[{i}]: [{citation.get('title')}]({citation.get('url')})"
+                                )
+                            await emitter.emit_message(content=f"\n</details>\n")
+
+                            await emitter.emit_status(
                                 status="complete",
                                 description="",
                                 done=True,
                             )
-                            yield f"\n\n{formatted_citations}"
 
                     except aiohttp.ClientError as e:
                         logger.error(f"Error during request: {e}")
