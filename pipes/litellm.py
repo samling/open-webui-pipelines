@@ -9,6 +9,7 @@ requirements: beautifulsoup4, yt_dlp
 """
 
 from bs4 import BeautifulSoup
+from copy import deepcopy
 from functools import lru_cache
 from pprint import pformat
 from pydantic import BaseModel, Field
@@ -17,6 +18,8 @@ import aiohttp
 import json
 import logging
 import requests
+
+from open_webui.utils.misc import get_last_user_message
 
 logging.basicConfig(
     level=logging.INFO,
@@ -127,9 +130,24 @@ class Pipe:
             default='["open-webui"]',
             description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
         )
+        REQUEST_TIMEOUT: int = Field(
+            default=5,
+            description="(Optional) Timeout (in seconds) for aiohttp session requests. Default is 5s."
+        )
         YOUTUBE_COOKIES_FILEPATH: str = Field(
             default="",
             description="(Optional) Path to cookies file from youtube.com to aid in title retrieval for citations."
+        )
+        VISION_ROUTER_ENABLED: bool = Field(
+            default=False, description="(Optional) Enable vision rerouting."
+        )
+        VISION_MODEL_ID: str = Field(
+            default="",
+            description="(Optional) The identifier of the vision model to be used for processing images."
+        )
+        SKIP_REROUTE_MODELS: list[str] = Field(
+            default_factory=list,
+            description="(Optional) A list of model identifiers that should not be re-routed to the chosen vision model.",
         )
         PERPLEXITY_RETURN_CITATIONS: bool = Field(
             default=True, description="(Optional) Enable citation retrieval for Perplexity models."
@@ -146,18 +164,6 @@ class Pipe:
         self.type = "manifold"
         self.valves = self.Valves()
         self._model_list = None
-
-        if self.valves.LITELLM_PIPELINE_DEBUG:
-            logger.setLevel(logging.DEBUG)
-            logger.debug("Debug logging is enabled for LiteLLM pipe")
-
-    def _enable_debug(self):
-        """
-        Set the logging level according to the valve preference.
-        """
-        if not logger.isEnabledFor(logging.DEBUG):
-            logger.setLevel(logging.DEBUG)
-            logger.debug("Debug logging is enabled for LiteLLM pipe")
 
     def _get_model_list(self):
         """
@@ -216,7 +222,11 @@ class Pipe:
         return metadata
 
     async def _build_completion_payload(
-        self, body: dict, __user__: dict, metadata: dict
+        self,
+        body: dict,
+        __user__: dict,
+        metadata: dict,
+        emitter: EventEmitter
     ) -> dict:
         """
         Build the final payload, including the metadata from _build_metadata
@@ -224,27 +234,69 @@ class Pipe:
         to identify the provider of the model we're talking to.
         """
         # Required parameters
-        model_parts = body["model"].split(".", 1)
-        model = model_parts[1] if len(model_parts) > 1 else body["model"]
+        model_parts = body["model"].split(".", 1) # models from this pipe look like e.g. "litellm.gpt-4o"
+        model_prefix = model_parts[0] if len(model_parts) > 1 else "" # "litellm"
+        model_name = model_parts[1] if len(model_parts) > 1 else body["model"] # "gpt-4o"
 
-        logger.debug(f"Body: {body}")
-        logger.debug(f"Model name: {model}")
+        # Get the most recent user message
+        messages = body.get("messages", [])
+        last_user_message_content = get_last_user_message(messages)
+        if last_user_message_content is None:
+            return body
 
-        provider = "openai"  # default
-        for m in self._model_list:
-            if m["name"] == model or m["id"] == model:
-                logger.debug(f"Matched {m['name']} (model id: {m['id']}) with {model}")
-                provider = m["provider"]
+        # Check for images in the last user message by inspecting the messages directly
+        has_images = False
+        for message in reversed(messages):
+            if message["role"] == "user":
+                if isinstance(message.get("content"), list):
+                    has_images = any(
+                        item.get("type") == "image_url" for item in message["content"]
+                    )
                 break
 
-        # logger.debug(f"Provider for model {model}: {provider}")
+        # Set the model to the vision model if it's defined and there's an image in the most recent user message
+        if has_images:
+            logger.debug(f"Found image in last user message; attempting to reroute request to vision model")
+            logger.debug(f"SKIPPED MODELS: {self.valves.SKIP_REROUTE_MODELS}")
+            logger.debug(f"CURRENT MODEL NAME: {model_name}")
 
-        payload = {
-            "model": model,
-            "messages": body.get("messages", []),
-            "stream": True,
-            "drop_params": True,
-        }
+            if self.valves.VISION_MODEL_ID:
+                # If we're not already using the rerouted models and we're not using a model that we want to skip rerouting in, reroute it
+                if model_name != self.valves.VISION_MODEL_ID and model_name not in self.valves.SKIP_REROUTE_MODELS:
+                    model_name = self.valves.VISION_MODEL_ID
+                    await emitter.emit_status(description=f"Request routed to {self.valves.VISION_MODEL_ID}", done=True)
+
+        # Clean base64-encoded images from previous messages
+        cleaned_messages = []
+        for message in messages:
+            cleaned_message = message.copy()
+            if isinstance(message.get("content"), list):
+                if (message["role"] == "user" and 
+                    any(item.get("type") == "text" and item.get("text") == last_user_message_content
+                        for item in message["content"])):
+                    # Keep the current message intact
+                    cleaned_message = message
+                else:
+                    # Clean up old messages
+                    cleaned_content = []
+                    for content in message["content"]:
+                        if content.get("type") == "image_url" and "url" in content["image_url"]:
+                            if content["image_url"]["url"].startswith("data:image"):
+                                content = {
+                                    "type": "text",
+                                    "text": "[Previous Image]"
+                                }
+                        cleaned_content.append(content)
+                    cleaned_message["content"] = cleaned_content
+            cleaned_messages.append(cleaned_message)
+
+        # Determine which provider the request is going to in order to add any provider-specific metadata
+        provider = "openai"  # default
+        for m in self._model_list:
+            if m["name"] == model_name or m["id"] == model_name:
+                logger.debug(f"Matched {m['name']} (model id: {m['id']}) with {model_name}")
+                provider = m["provider"]
+                break
 
         # Optional parameters with their default values
         optional_openai_params = {
@@ -256,7 +308,7 @@ class Pipe:
             "stop",
         }
 
-        # Only add parameters that differ from defaults
+        # Only add openai parameters that differ from defaults
         for param in optional_openai_params:
             if param in body:
                 payload[param] = body[param]
@@ -269,6 +321,14 @@ class Pipe:
                 "return_related_questions": self.valves.PERPLEXITY_RETURN_RELATED_QUESTIONS,
             }
         })
+
+        # Final payload with base properties
+        payload = {
+            "model": model_name, # optional vision model if image in last message
+            "messages": cleaned_messages, # only most recent message contains data blobs
+            "stream": True,
+            "drop_params": True, # litellm
+        }
 
         # Add provider-specific parameters if applicable
         if provider in provider_params:
@@ -312,7 +372,7 @@ class Pipe:
                         logger.warning(f"Failed to retrieve youtube title from url: {url}")
             else:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=2) as response:
+                    async with session.get(url, timeout=self.valves.REQUEST_TIMEOUT) as response:
                         if response.status == 200:
                             html = await response.text()
                             soup = BeautifulSoup(html, "html.parser")
@@ -414,11 +474,22 @@ class Pipe:
         """
         Get the list of models and return it to Open-WebUI.
         """
+
+        #Set the logging level according to the valve preference.
+        global logger
+        if self.valves.LITELLM_PIPELINE_DEBUG:
+            logger.setLevel(logging.DEBUG)
+            logger.debug("Debug logging is enabled for LiteLLM pipe")
+        else:
+            logger.setLevel(logging.INFO)
+            logger.info("Debug logging is disabled for LiteLLM pipe")
+
         logger.debug("pipes() called - fetching model list")
         self._model_list = self._get_model_list()
 
         model_list = [
-            {"id": model["id"], "name": model["name"]} for model in self._model_list
+            # use model['name'] instead of model['id'] for 'id' here because that's easier to match on
+            {"id": model["name"], "name": model["name"]} for model in self._model_list
         ]
 
         return model_list
@@ -436,12 +507,6 @@ class Pipe:
 
         current_citations = set()
 
-        if self.valves.LITELLM_PIPELINE_DEBUG:
-            self._enable_debug()
-            logger.debug("Starting pipe execution")
-            logger.debug(f"Metadata: {__metadata__}")
-            logger.debug(f"Body: {body}")
-
         if self._model_list is None:
             logger.warning("Model list not initialized - this shouldn't happen")
             self._model_list = self._get_model_list()
@@ -454,9 +519,18 @@ class Pipe:
             emitter = EventEmitter(__event_emitter__)
 
             metadata = await self._build_metadata(__user__, __metadata__)
-            payload = await self._build_completion_payload(body, __user__, metadata)
+            payload = await self._build_completion_payload(body, __user__, metadata, emitter)
 
-            logger.debug(f"Final payload: {json.dumps(payload, indent=2)}")
+            # Remove binary data from the logs to keep things clean
+            log_payload = deepcopy(payload)
+            if "messages" in log_payload:
+                for message in log_payload["messages"]:
+                    if isinstance(message.get("content"), list):
+                        for content in message["content"]:
+                            if content.get("type") == "image_url" and "url" in content["image_url"]:
+                                if content["image_url"]["url"].startswith("data:image"):
+                                    content["image_url"]["url"] = "[BASE64_IMAGE_DATA]"
+            logger.debug(f"Final payload: {json.dumps(log_payload, indent=2)}")
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
