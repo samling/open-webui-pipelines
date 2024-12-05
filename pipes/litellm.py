@@ -11,7 +11,6 @@ requirements: beautifulsoup4, yt_dlp
 from bs4 import BeautifulSoup
 from copy import deepcopy
 from functools import lru_cache
-from pprint import pformat
 from pydantic import BaseModel, Field
 from typing import Dict, List, AsyncGenerator, Union, Callable, Any, Awaitable
 import aiohttp
@@ -398,14 +397,32 @@ class Pipe:
                 "content": ""
             }
             citations_list.append(citation)
-            print(f"Appended citation: {citation}")
+            logger.debug(f"Appended citation: {citation}")
 
         return citations_list
+
+    async def _process_citations(self, citations: set, emitter: EventEmitter, is_title_gen: bool = False):
+        """
+        Process and emit citations if any exist and we're not generating a title.
+        """
+        if citations and not is_title_gen:
+            await emitter.emit_status(description=f"Formatting citations...")
+
+            citations_list = await self._build_citation_list(citations)
+
+            await emitter.emit_message(content=f"\n<details>\n<summary>Sources</summary>")
+            for i, citation in enumerate(citations_list, 1):
+                await emitter.emit_message(
+                    content=f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+                )
+            await emitter.emit_message(content=f"\n</details>\n")
+            await emitter.emit_status(description="", done=True, status="complete")
 
     async def _stream_response(self, response):
         """
         Handle streaming responses.
         """
+
         async for line in response.content:
             if not line:
                 continue
@@ -429,6 +446,7 @@ class Pipe:
                         delta = json_data["choices"][0].get("delta", {})
                         if "content" in delta:
                             yield json_data
+
                 except json.JSONDecodeError as je:
                     logger.error(f"JSON decode error for line: {line}")
                     logger.error(f"Error details: {str(je)}")
@@ -442,7 +460,7 @@ class Pipe:
                 logger.exception(f"Unexpected error processing line: {str(e)}")
                 continue
 
-    async def _get_response(self, response, current_citations: set):
+    async def _get_response(self, response):
         """
         Handle non-streaming responses.
         """
@@ -458,11 +476,6 @@ class Pipe:
                             delta = json_data["choices"][0].get("delta", {})
                             if "content" in delta:
                                 accumulated_content += delta["content"]
-                        if "citations" in json_data:
-                            if isinstance(json_data["citations"], list):
-                                current_citations.update(json_data["citations"])
-                            elif isinstance(json_data["citations"], str):
-                                current_citations.add(json_data["citations"])
                     except json.JSONDecodeError:
                         continue
 
@@ -505,7 +518,7 @@ class Pipe:
         The main pipe through which requests flow.
         """
 
-        current_citations = set()
+        citations = set()
 
         if self._model_list is None:
             logger.warning("Model list not initialized - this shouldn't happen")
@@ -541,58 +554,30 @@ class Pipe:
                     try:
                         response.raise_for_status()
 
-                        is_owui_title_gen_task = False
-                        if __metadata__.get("task") and len(__metadata__["task"]) > 0:
-                            if __metadata__["task"] == "title_generation":
-                                is_owui_title_gen_task = True
+                        is_title_gen = __metadata__.get("task") == "title_generation"
 
                         if body["stream"]:
                             async for chunk in self._stream_response(response):
                                 if "citations" in chunk:
                                     if isinstance(chunk["citations"], list):
-                                        current_citations.update(chunk["citations"])
+                                        citations.update(chunk["citations"])
                                     elif isinstance(chunk["citations"], str):
-                                        current_citations.add(chunk["citations"])
+                                        citations.add(chunk["citations"])
                                 yield chunk
                         else:
-                            content = await self._get_response(response, current_citations)
+                            content = await self._get_response(response)
                             yield content
 
-                        # Ensure we have citations to emit; don't add them to the response
-                        # to the prompt that generates titles.
-                        if current_citations and not is_owui_title_gen_task:
-                            await emitter.emit_status(f"Formatting citations...")
+                        await self._process_citations(citations, emitter, is_title_gen)
 
-                            citations = await self._build_citation_list(current_citations)
-
-                            # for i, citation in enumerate(citations, 1):
-                            #     document = (
-                            #         f"<div>"
-                            #         f"Some content here"
-                            #         f"</div>"
-                            #     )
-                            #     await emitter.emit_source(
-                            #         url=citation.get('url'),
-                            #         name=citation.get('title'),
-                            #         document=document
-                            #     )
-
-                            await emitter.emit_message(content=f"\n<details>\n<summary>Sources</summary>")
-                            for i, citation in enumerate(citations, 1):
-                                await emitter.emit_message(
-                                    content=f"\n[{i}]: [{citation.get('title')}]({citation.get('url')})"
-                                )
-                            await emitter.emit_message(content=f"\n</details>\n")
-
-                            await emitter.emit_status(
-                                status="complete",
-                                description="",
-                                done=True,
-                            )
+                        await emitter.emit_status(
+                            status="complete",
+                            description="",
+                            done=True,
+                        )
 
                     except aiohttp.ClientError as e:
                         logger.error(f"Error during request: {e}")
                         yield f"Error: {e}"
         except Exception as e:
             logger.exception(f"Unexpected error in pipe: {e}")
-            print(f"Error: {e}")
