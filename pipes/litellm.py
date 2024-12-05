@@ -353,6 +353,16 @@ class Pipe:
 
     async def _get_url_title(self, url: str) -> str:
         import yt_dlp as ytdl
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+
         try:
             if "youtube.com" in url or "youtu.be" in url:
                     ydl_opts = {
@@ -371,18 +381,57 @@ class Pipe:
                         logger.warning(f"Failed to retrieve youtube title from url: {url}")
             else:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=self.valves.REQUEST_TIMEOUT) as response:
-                        if response.status == 200:
-                            html = await response.text()
-                            soup = BeautifulSoup(html, "html.parser")
-                            title = soup.title.string if soup.title else None
-                            if title:
-                                return title.strip()
-                        else:
-                            logger.warning(f"Failed to retrieve url {url} - status code {response.status}")
+                    try:
+                        async with session.get(url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT) as response:
+                            if response.status == 200:
+                                html = await response.text()
+                                soup = BeautifulSoup(html, "html.parser")
+
+                                # Try metadata title first
+                                meta_title = soup.find("meta", property="og:title")
+                                if meta_title and meta_title.get("content"):
+                                    return meta_title["content"].strip()
+                                
+                                # Fall back to regular title
+                                if soup.title and soup.title.string:
+                                    return soup.title.string.strip()
+
+                                # Finally, try h1
+                                if soup.h1:
+                                    return soup.h1.get_text().strip()
+                            else:
+                                logger.warning(f"Failed to retrieve url: {url} (status code {response.status})")
+                    except aiohttp.ClientError as e:
+                        logger.warning(f"Initial request failed, trying with different User-Agent: {str(e)}")
+
+                        # Try with a mobile user agent
+                        headers['User-Agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1'
+
+                        try:
+                            async with session.get(url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT) as response:
+                                if response.status == 200:
+                                    html = await response.text()
+                                    soup = BeautifulSoup(html, "html.parser")
+
+                                    # Try metadata title first
+                                    meta_title = soup.find("meta", property="og:title")
+                                    if meta_title and meta_title.get("content"):
+                                        return meta_title["content"].strip()
+                                    
+                                    # Fall back to regular title
+                                    if soup.title and soup.title.string:
+                                        return soup.title.string.strip()
+
+                                    # Finally, try h1
+                                    if soup.h1:
+                                        return soup.h1.get_text().strip()
+                        except Exception as e2:
+                            logger.warning(f"Both attempts failed for url {url}: {str(e2)}")
+
         except Exception as e:
             logger.warning(f"Failed to retrieve url: {url}")
-            return url
+
+        return url
 
     async def _build_citation_list(self, citations: set) -> str:
         """
