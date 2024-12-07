@@ -18,7 +18,7 @@ import json
 import logging
 import requests
 
-from open_webui.utils.misc import get_last_user_message
+from open_webui.utils.misc import get_last_user_message, pop_system_message
 
 logging.basicConfig(
     level=logging.INFO,
@@ -243,6 +243,12 @@ class Pipe:
         if last_user_message_content is None:
             return body
 
+        # Process system prompt if there is one
+        system_message, messages = pop_system_message(messages)
+        system_prompt = "You are a helpful assistant."
+        if system_message is not None:
+            system_prompt = system_message["content"]
+
         # Check for images in the last user message by inspecting the messages directly
         has_images = False
         for message in reversed(messages):
@@ -307,11 +313,6 @@ class Pipe:
             "stop",
         }
 
-        # Only add openai parameters that differ from defaults
-        for param in optional_openai_params:
-            if param in body:
-                payload[param] = body[param]
-
         # Provider-specific parameters
         provider_params = dict({
             "perplexity": {
@@ -324,10 +325,15 @@ class Pipe:
         # Final payload with base properties
         payload = {
             "model": model_name, # optional vision model if image in last message
-            "messages": cleaned_messages, # only most recent message contains data blobs
+            "messages": [{"role": "system", "content": system_prompt}, *cleaned_messages], # only most recent message contains data blobs
             "stream": True,
             "drop_params": True, # litellm
         }
+
+        # Only add openai parameters that differ from defaults
+        for param in optional_openai_params:
+            if param in body:
+                payload[param] = body[param]
 
         # Add provider-specific parameters if applicable
         if provider in provider_params:
