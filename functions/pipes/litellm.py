@@ -159,9 +159,20 @@ class Pipe:
         )
         pass
 
+    class UserValves(BaseModel):
+        EXTRA_METADATA: str = Field(
+            default="", description='(Optional) Additional metadata, e.g. {"key": "value"}'
+        )
+        EXTRA_TAGS: str = Field(
+            default='',
+            description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
+        )
+
+
     def __init__(self):
         self.type = "manifold"
         self.valves = self.Valves()
+        self.user_valves = self.UserValves()
         self._model_list = None
 
     def _get_model_list(self):
@@ -200,7 +211,7 @@ class Pipe:
             logger.error(f"Error fetching models from LiteLLM: {e}")
             return []
 
-    async def _build_metadata(self, __user__, __metadata__):
+    async def _build_metadata(self, __user__, __metadata__, user_valves):
         """
         Construct additional metadata to add to the request.
         This includes trace data to be sent to an observation platform like Langfuse.
@@ -214,8 +225,18 @@ class Pipe:
         extra_metadata = load_json(self.valves.EXTRA_METADATA)
         __metadata__.update(extra_metadata)
 
+        logger.debug(f"User valves: {user_valves}")
+        logger.debug(f"User metadata: {user_valves.EXTRA_METADATA}")
+        extra_user_metadata = load_json(user_valves.EXTRA_METADATA)
+        __metadata__.update(extra_user_metadata)
+
+        logger.debug(f"User tags: {user_valves.EXTRA_TAGS}")
         extra_tags = load_json(self.valves.EXTRA_TAGS, as_list=True)
         metadata["tags"].update(extra_tags)
+
+        extra_user_tags = load_json(user_valves.EXTRA_TAGS, as_list=True)
+        metadata["tags"].update(extra_user_tags)
+
         metadata["tags"] = list(metadata["tags"])
 
         return metadata
@@ -225,6 +246,7 @@ class Pipe:
         body: dict,
         __user__: dict,
         metadata: dict,
+        user_valves: UserValves,
         emitter: EventEmitter
     ) -> dict:
         """
@@ -573,6 +595,10 @@ class Pipe:
         The main pipe through which requests flow.
         """
 
+        user_valves = __user__.get("valves")
+        if not user_valves:
+            user_valves = self.UserValves()
+
         citations = set()
 
         if self._model_list is None:
@@ -586,8 +612,8 @@ class Pipe:
         try:
             emitter = EventEmitter(__event_emitter__)
 
-            metadata = await self._build_metadata(__user__, __metadata__)
-            payload = await self._build_completion_payload(body, __user__, metadata, emitter)
+            metadata = await self._build_metadata(__user__, __metadata__, user_valves)
+            payload = await self._build_completion_payload(body, __user__, metadata, user_valves, emitter)
 
             # Remove binary data from the logs to keep things clean
             log_payload = deepcopy(payload)
