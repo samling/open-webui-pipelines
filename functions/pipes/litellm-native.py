@@ -141,7 +141,7 @@ class Pipe:
             description='(Optional) Langfuse host.'
         )
         EXTRA_METADATA: str = Field(
-            default="", description='(Optional) Additional metadata, e.g. {"key": "value"}'
+            default="{}", description='(Optional) Additional metadata, e.g. {"key": "value"}'
         )
         EXTRA_TAGS: str = Field(
             default='["open-webui"]',
@@ -160,10 +160,10 @@ class Pipe:
         )
         VISION_MODEL_ID: str = Field(
             default="",
-            description="(Optional) The identifier of the vision model to be used for processing images."
+            description="(Optional) The identifier of the vision model to be used for processing images. Must be in litellm format, e.g. gemini/gemini-1.5-pro"
         )
         SKIP_REROUTE_MODELS: list[str] = Field(
-            default_factory=list,
+            default_factory=list[None],
             description="(Optional) A list of model identifiers that should not be re-routed to the chosen vision model.",
         )
         PERPLEXITY_RETURN_CITATIONS: bool = Field(
