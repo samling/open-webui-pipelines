@@ -568,14 +568,17 @@ class Pipe:
         global logger
         if self.valves.PIPE_DEBUG:
             logger.setLevel(logging.DEBUG)
-            logger.debug("Debug logging is enabled for LiteLLM pipe")
+            logger.debug("Debug logging is enabled for the pipe")
         else:
             logger.setLevel(logging.INFO)
-            logger.info("Debug logging is disabled for LiteLLM pipe")
+            logger.info("Debug logging is disabled for the pipe")
 
         if self.valves.LITELLM_DEBUG:
+            logger.info("Debug logging is enabled for LiteLLM")
             litellm.set_verbose = True
             litellm.json_logs = True
+        else:
+            logger.info("Debug logging is disabled for LiteLLM")
 
         if self.valves.LANGFUSE_PUBLIC_KEY and self.valves.LANGFUSE_SECRET_KEY and self.valves.LANGFUSE_HOST:
             logger.debug("Langfuse credentials and host present; traces are enabled")
