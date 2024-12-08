@@ -18,6 +18,7 @@ import aiohttp
 import json
 import litellm
 import logging
+import os
 import requests
 
 from open_webui.utils.misc import get_last_user_message, pop_system_message
@@ -121,8 +122,11 @@ class Pipe:
             default="sk-fake-key",
             description="(Required) Your LiteLLM master key.",
         )
-        LITELLM_PIPELINE_DEBUG: bool = Field(
-            default=False, description="(Optional) Enable debugging."
+        LITELLM_DEBUG: bool = Field(
+            default=False, description="(Optional) Enable debugging for litellm."
+        )
+        PIPE_DEBUG: bool = Field(
+            default=False, description="(Optional) Enable debugging for the pipe."
         )
         LANGFUSE_PUBLIC_KEY: str = Field(
             default="",
@@ -367,7 +371,7 @@ class Pipe:
         payload = {
             "model": model_name, # optional vision model if image in last message
             "messages": [{"role": "system", "content": system_prompt}, *cleaned_messages], # only most recent message contains data blobs
-            "drop_params": True, # litellm
+            "drop_params": True, # drop unsupported openai parameters from models that don't support them
         }
 
         # Only add openai parameters that differ from defaults
@@ -562,17 +566,26 @@ class Pipe:
 
         #Set the logging level according to the valve preference.
         global logger
-        if self.valves.LITELLM_PIPELINE_DEBUG:
+        if self.valves.PIPE_DEBUG:
             logger.setLevel(logging.DEBUG)
-            logger.debug("Debug logging is enabled for LiteLLM pipe")
+            logger.debug("Debug logging is enabled for the pipe")
         else:
             logger.setLevel(logging.INFO)
-            logger.info("Debug logging is disabled for LiteLLM pipe")
+            logger.info("Debug logging is disabled for the pipe")
+
+        if self.valves.LITELLM_DEBUG:
+            logger.info("Debug logging is enabled for LiteLLM")
+            litellm.set_verbose = True
+            litellm.json_logs = True
+        else:
+            logger.info("Debug logging is disabled for LiteLLM")
 
         if self.valves.LANGFUSE_PUBLIC_KEY and self.valves.LANGFUSE_SECRET_KEY and self.valves.LANGFUSE_HOST:
             logger.debug("Langfuse credentials and host present; traces are enabled")
             litellm.success_callback = ["langfuse"]
             litellm.failure_callback = ["langfuse"]
+
+        litellm.suppress_debug_info = True
 
         logger.debug("pipes() called - fetching model list")
         self._model_list = self._get_model_list()
