@@ -346,7 +346,7 @@ class Pipe:
 
         # Optional parameters with their default values
         optional_openai_params = {
-            "seed",
+            "seed", # TODO: not sure if these are getting passed in properly, seed=0+temp=0 doesn't have the desired effect
             "temperature",
             "top_p",
             "max_tokens",
