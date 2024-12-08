@@ -18,7 +18,7 @@ import aiohttp
 import json
 import litellm
 import logging
-import os
+import re
 import requests
 
 from open_webui.utils.misc import get_last_user_message, pop_system_message
@@ -141,7 +141,7 @@ class Pipe:
             description='(Optional) Langfuse host.'
         )
         EXTRA_METADATA: str = Field(
-            default="", description='(Optional) Additional metadata, e.g. {"key": "value"}'
+            default="{}", description='(Optional) Additional metadata, e.g. {"key": "value"}'
         )
         EXTRA_TAGS: str = Field(
             default='["open-webui"]',
@@ -160,10 +160,10 @@ class Pipe:
         )
         VISION_MODEL_ID: str = Field(
             default="",
-            description="(Optional) The identifier of the vision model to be used for processing images."
+            description="(Optional) The identifier of the vision model to be used for processing images. Must be in litellm format, e.g. gemini/gemini-1.5-pro"
         )
         SKIP_REROUTE_MODELS: list[str] = Field(
-            default_factory=list,
+            default_factory=list[None],
             description="(Optional) A list of model identifiers that should not be re-routed to the chosen vision model.",
         )
         PERPLEXITY_RETURN_CITATIONS: bool = Field(
@@ -230,6 +230,10 @@ class Pipe:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching models from LiteLLM: {e}")
             return []
+    
+    def _get_provider_by_model_name(self, model_name):
+        model = next((m for m in self._model_list if m["model_name"] == model_name), None)
+        return model["provider"] if model else None
 
     async def _build_metadata(self, __user__, __metadata__, user_valves):
         """
@@ -274,21 +278,11 @@ class Pipe:
         and any provider-specific parameters, using the model list from _get_model_list()
         to identify the provider of the model we're talking to.
         """
-        # Parse the model id into provider and name
-        logger.debug(f"model: {body['model']}")
-        model_parts = body["model"].split(".", 1) # models from this pipe look like e.g. "litellm_native.gpt-4o" or "litellm_native.anthropic/claude-3.5-sonnet"
-        model_prefix = model_parts[0] if len(model_parts) > 1 else "" # "litellm_native"
-        model_name_or_id = model_parts[1] if len(model_parts) > 1 else body["model"] # "gpt-4o", "anthropic/claude-3.5-sonnet"
-
-        provider = None
-        model_name = None
-        for m in self._model_list:
-            if m["model_name"] == model_name_or_id or m["id"] == model_name_or_id:
-                logger.debug(f"Matched {m['model_name']} (id: {m['id']}) with {model_name_or_id}")
-                model_name = m["model_name"] # "gpt-4o", "anthropic/claude-3.5-sonnet"
-                if "provider" in m and m["provider"]:
-                    provider = m["provider"]
-                break
+        # Models from this pipe look like e.g. "litellm_native.gpt-4o" or "litellm_native.anthropic/claude-3.5-sonnet"
+        logger.debug(f"Model from open-webui request: {body['model']}")
+        model_parts = body["model"].split(".", 1)
+        model_name = model_parts[1] if len(model_parts) > 1 else body["model"] # "gpt-4o", "anthropic/claude-3.5-sonnet"
+        provider = self._get_provider_by_model_name(model_name)
 
         # Get the most recent user message
         messages = body.get("messages", [])
@@ -350,7 +344,7 @@ class Pipe:
 
         # Optional parameters with their default values
         optional_openai_params = {
-            "seed", # TODO: not sure if these are getting passed in properly, seed=0+temp=0 doesn't have the desired effect
+            "seed",
             "temperature",
             "top_p",
             "max_tokens",
@@ -509,13 +503,36 @@ class Pipe:
 
             citations_list = await self._build_citation_list(citations)
 
-            await emitter.emit_message(content=f"\n<details>\n<summary>Sources</summary>")
+            await emitter.emit_message(content=f"\n\n<details>\n<summary>Sources</summary>")
             for i, citation in enumerate(citations_list, 1):
                 await emitter.emit_message(
                     content=f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
                 )
             await emitter.emit_message(content=f"\n</details>\n")
             await emitter.emit_status(description="", done=True, status="complete")
+
+    def _convert_citations_to_superscript(self, match):
+        """
+        Convert a citation like [1] to its Unicode superscript equivalent
+        """
+        # Mapping of normal numbers to their superscript versions
+        superscript_map = {
+            '0': '⁰',
+            '1': '¹',
+            '2': '²',
+            '3': '³',
+            '4': '⁴',
+            '5': '⁵',
+            '6': '⁶',
+            '7': '⁷',
+            '8': '⁸',
+            '9': '⁹',
+            '[': '⁽',
+            ']': '⁾'
+        }
+        
+        citation = match.group(0)  # Get the number from within the brackets
+        return ''.join(superscript_map.get(c, c) for c in citation)
 
     async def _stream_response(self, payload, citations):
         """
@@ -531,6 +548,16 @@ class Pipe:
                     citations.update(chunk["citations"])
                 elif isinstance(chunk["citations"], str):
                     citations.add(chunk["citations"])
+
+            if chunk.get("choices") and chunk["choices"][0].get("delta") and chunk["choices"][0]["delta"].get("content"):
+                content = chunk["choices"][0]["delta"]["content"]
+
+                modified_content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
+
+                if modified_content != content:
+                    logger.debug(f"Converted citations in chunk: {content} -> {modified_content}")
+                    chunk["choices"][0]["delta"]["content"] = modified_content
+
             yield chunk
 
     async def _get_response(self, payload, citations):
@@ -542,22 +569,19 @@ class Pipe:
             **payload
         )
 
-        logger.debug(f"Accumulated content: {response}")
+        content = response.choices[0].message.content
+        logger.debug(f"Accumulated content: {content}")
 
-        if response.choices and len(response.choices) > 0:
-            choice = response.choices[0]
-            if hasattr(choice, 'message') and choice.message:
-                if hasattr(choice.message, 'content'):
-                    message_content = choice.message.content
-                    return message_content
-                else:
-                    logger.error("Message object is missing the 'content' attribute")
-            else:
-                logger.error("Choice object is missing the 'message' attribute or message is empty")
-        else:
-            logger.error("The 'choices' list is empty")
+        if hasattr(response, 'citations') and response.citations and len(response.citations) > 0:
+            content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
 
-        return response.choices[0].message.content
+            citations_list = await self._build_citation_list(response.citations)
+            content += "\n\n<details>\n<summary>Sources</summary>\n"
+            for i, citation in enumerate(citations_list, 1):
+                content += f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+            content += "\n</details>\n"
+
+        return content
 
     def pipes(self):
         """
@@ -577,15 +601,17 @@ class Pipe:
             logger.info("Debug logging is enabled for LiteLLM")
             litellm.set_verbose = True
             litellm.json_logs = True
+            litellm.suppress_debug_info = False
         else:
             logger.info("Debug logging is disabled for LiteLLM")
+            litellm.set_verbose = False
+            litellm.json_logs = False
+            litellm.suppress_debug_info = True
 
         if self.valves.LANGFUSE_PUBLIC_KEY and self.valves.LANGFUSE_SECRET_KEY and self.valves.LANGFUSE_HOST:
             logger.debug("Langfuse credentials and host present; traces are enabled")
             litellm.success_callback = ["langfuse"]
             litellm.failure_callback = ["langfuse"]
-
-        litellm.suppress_debug_info = True
 
         logger.debug("pipes() called - fetching model list")
         self._model_list = self._get_model_list()
@@ -614,10 +640,6 @@ class Pipe:
 
         citations = set()
 
-        if self._model_list is None:
-            logger.warning("Model list not initialized - this shouldn't happen")
-            self._model_list = self._get_model_list()
-
         try:
             emitter = EventEmitter(__event_emitter__)
 
@@ -641,11 +663,11 @@ class Pipe:
                 if body["stream"]:
                     async for chunk in self._stream_response(payload, citations):
                         yield chunk
+                    if citations:
+                        await self._process_citations(citations, emitter, is_title_gen)
                 else:
                     content = await self._get_response(payload, citations)
                     yield content
-
-                await self._process_citations(citations, emitter, is_title_gen)
 
                 await emitter.emit_status(
                     status="complete",
