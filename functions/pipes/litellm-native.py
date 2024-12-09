@@ -560,7 +560,7 @@ class Pipe:
 
             yield chunk
 
-    async def _get_response(self, payload, citations):
+    async def _get_response(self, payload, citations, is_title_gen: bool = False):
         """
         Handle non-streaming responses.
         """
@@ -572,14 +572,15 @@ class Pipe:
         content = response.choices[0].message.content
         logger.debug(f"Accumulated content: {content}")
 
-        if hasattr(response, 'citations') and response.citations and len(response.citations) > 0:
-            content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
+        if not is_title_gen:
+            if hasattr(response, 'citations') and response.citations and len(response.citations) > 0:
+                content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
 
-            citations_list = await self._build_citation_list(response.citations)
-            content += "\n\n<details>\n<summary>Sources</summary>\n"
-            for i, citation in enumerate(citations_list, 1):
-                content += f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
-            content += "\n</details>\n"
+                citations_list = await self._build_citation_list(response.citations)
+                content += "\n\n<details>\n<summary>Sources</summary>\n"
+                for i, citation in enumerate(citations_list, 1):
+                    content += f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+                content += "\n</details>\n"
 
         return content
 
@@ -666,7 +667,7 @@ class Pipe:
                     if citations:
                         await self._process_citations(citations, emitter, is_title_gen)
                 else:
-                    content = await self._get_response(payload, citations)
+                    content = await self._get_response(payload, citations, is_title_gen)
                     yield content
 
                 await emitter.emit_status(
