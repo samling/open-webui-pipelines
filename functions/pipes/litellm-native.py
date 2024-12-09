@@ -217,14 +217,15 @@ class Pipe:
                 model_info = model.get("model_info", {})
                 litellm_params = model.get("litellm_params", {})
                 model_list.append(
-                    {
-                        "id": model_info.get("id"),
-                        "friendly_name": model.get("model_name"),
-                        "model_name": litellm_params.get("model"),
-                        "provider": model_info.get("litellm_provider"),
-                        "supported_openai_params": model_info.get("supported_openai_params"),
-                        "max_input_tokens": model_info.get("max_input_tokens"),
-                    }
+                    model
+                    # {
+                    #     "id": model_info.get("id"),
+                    #     "friendly_name": model.get("model_name"),
+                    #     "model_name": litellm_params.get("model"),
+                    #     "provider": model_info.get("litellm_provider"),
+                    #     "supported_openai_params": model_info.get("supported_openai_params"),
+                    #     "max_input_tokens": model_info.get("max_input_tokens"),
+                    # }
                 )
 
             return model_list
@@ -233,8 +234,54 @@ class Pipe:
             logger.error(f"Error fetching models from LiteLLM: {e}")
             return []
     
-    def _get_model_by_model_name(self, model_name) -> Dict | None:
-        model = next((m for m in self._model_list if m["model_name"] == model_name), None)
+    def _get_litellm_model_props_by_model_name(self, model_name) -> Dict | None:
+        # {
+        #     "model_name": "gpt-4o-2024-11-20",
+        #     "litellm_params": {
+        #         "model": "gpt-4o-2024-11-20"
+        #     },
+        #     "model_info": {
+        #         "id": "83ac0666d5e4f6c170e19c5809eb9fe0563a3c7488342114a11384fe6e268562",
+        #         "db_model": false,
+        #         "key": "gpt-4o-2024-11-20",
+        #         "max_tokens": 16384,
+        #         "max_input_tokens": 128000,
+        #         "max_output_tokens": 16384,
+        #         "input_cost_per_token": 0.0000025,
+        #         "cache_creation_input_token_cost": null,
+        #         "cache_read_input_token_cost": 0.00000125,
+        #         "input_cost_per_character": null,
+        #         "input_cost_per_token_above_128k_tokens": null,
+        #         "input_cost_per_query": null,
+        #         "input_cost_per_second": null,
+        #         "input_cost_per_audio_token": null,
+        #         "output_cost_per_token": 0.00001,
+        #         "output_cost_per_audio_token": null,
+        #         "output_cost_per_character": null,
+        #         "output_cost_per_token_above_128k_tokens": null,
+        #         "output_cost_per_character_above_128k_tokens": null,
+        #         "output_cost_per_second": null,
+        #         "output_cost_per_image": null,
+        #         "output_vector_size": null,
+        #         "litellm_provider": "openai",
+        #         "mode": "chat",
+        #         "supported_openai_params": [
+        #            (...)
+        #         ],
+        #         "supports_system_messages": null,
+        #         "supports_response_schema": true,
+        #         "supports_vision": true,
+        #         "supports_function_calling": true,
+        #         "supports_assistant_prefill": false,
+        #         "supports_prompt_caching": true,
+        #         "supports_audio_input": false,
+        #         "supports_audio_output": false,
+        #         "supports_pdf_input": false,
+        #         "tpm": null,
+        #         "rpm": null
+        #     }
+        # },
+        model = next((m for m in self._model_list if m["litellm_params"]["model"] == model_name), None)
         logger.debug(f"Retrieved properties for model {model_name}:\n\t{pformat(model)}")
         return model if model else None
 
@@ -287,8 +334,8 @@ class Pipe:
         model_name = model_parts[1] if len(model_parts) > 1 else body["model"] # "gpt-4o", "anthropic/claude-3.5-sonnet"
 
         # We have to go retrieve our properties from the original self._model_list by using the model_name from the body
-        model_props = self._get_model_by_model_name(model_name)
-        provider = model_props["provider"]
+        litellm_model_props = self._get_litellm_model_props_by_model_name(model_name)
+        provider = litellm_model_props["model_info"]["litellm_provider"]
 
         # Get the most recent user message
         messages = body.get("messages", [])
@@ -300,6 +347,7 @@ class Pipe:
         system_message, messages = pop_system_message(messages)
         system_prompt = "You are a helpful assistant."
         if system_message is not None:
+            logger.debug(f"Using non-default system prompt: {system_message['content']}")
             system_prompt = system_message["content"]
 
         # Check for images in the last user message by inspecting the messages directly
@@ -315,16 +363,16 @@ class Pipe:
         # Set the model to the vision model if it's defined and there's an image in the most recent user message
         if has_images:
             logger.debug(f"Found image in last user message; attempting to reroute request to vision model")
-            logger.debug(f"SKIPPED MODELS: {self.valves.SKIP_REROUTE_MODELS}")
-            logger.debug(f"CURRENT MODEL NAME: {model_name}")
-
             if self.valves.VISION_MODEL_ID:
                 # If we're not already using the rerouted models and we're not using a model that we want to skip rerouting in, reroute it
                 if model_name != self.valves.VISION_MODEL_ID and model_name not in self.valves.SKIP_REROUTE_MODELS:
                     model_name = self.valves.VISION_MODEL_ID
                     await emitter.emit_status(description=f"Request routed to {self.valves.VISION_MODEL_ID}", done=True)
+                else:
+                    logger.debug(f"Model is the same as target vision model or is in SKIP_REROUTE_MODELS")
 
         # Clean base64-encoded images from previous messages
+        logger.debug(f"Stripping encoded image data from past messages")
         cleaned_messages = []
         for message in messages:
             cleaned_message = message.copy()
@@ -349,7 +397,7 @@ class Pipe:
             cleaned_messages.append(cleaned_message)
 
         # Trim messages to fit in model's max_tokens
-        logger.debug(f"Trimming message content to max_input_tokens value: {model_props['max_input_tokens']}")
+        logger.debug(f"Trimming message content to max_input_tokens value: {litellm_model_props['model_info']['max_input_tokens']}")
         cleaned_messages = trim_messages(cleaned_messages, model_name)
 
         # Optional parameters with their default values
@@ -629,7 +677,7 @@ class Pipe:
 
         model_list = [
             # use model['model_name'] instead of model['id'] for 'id' here because that's easier to match on
-            {"id": model["model_name"], "name": model["friendly_name"]} for model in self._model_list
+            {"id": model["litellm_params"]["model"], "name": model["model_name"]} for model in self._model_list
         ]
 
         return model_list
