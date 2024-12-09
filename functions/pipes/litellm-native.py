@@ -11,6 +11,7 @@ requirements: beautifulsoup4, yt_dlp, litellm
 from bs4 import BeautifulSoup
 from copy import deepcopy
 from functools import lru_cache
+from litellm.utils import trim_messages
 from pprint import pformat
 from pydantic import BaseModel, Field
 from typing import Dict, List, AsyncGenerator, Union, Callable, Any, Awaitable
@@ -221,7 +222,8 @@ class Pipe:
                         "friendly_name": model.get("model_name"),
                         "model_name": litellm_params.get("model"),
                         "provider": model_info.get("litellm_provider"),
-                        "supported_openai_params": model_info.get("supported_openai_params")
+                        "supported_openai_params": model_info.get("supported_openai_params"),
+                        "max_input_tokens": model_info.get("max_input_tokens"),
                     }
                 )
 
@@ -231,9 +233,10 @@ class Pipe:
             logger.error(f"Error fetching models from LiteLLM: {e}")
             return []
     
-    def _get_provider_by_model_name(self, model_name):
+    def _get_model_by_model_name(self, model_name) -> Dict | None:
         model = next((m for m in self._model_list if m["model_name"] == model_name), None)
-        return model["provider"] if model else None
+        logger.debug(f"Retrieved properties for model {model_name}:\n\t{pformat(model)}")
+        return model if model else None
 
     async def _build_metadata(self, __user__, __metadata__, user_valves):
         """
@@ -282,7 +285,10 @@ class Pipe:
         logger.debug(f"Model from open-webui request: {body['model']}")
         model_parts = body["model"].split(".", 1)
         model_name = model_parts[1] if len(model_parts) > 1 else body["model"] # "gpt-4o", "anthropic/claude-3.5-sonnet"
-        provider = self._get_provider_by_model_name(model_name)
+
+        # We have to go retrieve our properties from the original self._model_list by using the model_name from the body
+        model_props = self._get_model_by_model_name(model_name)
+        provider = model_props["provider"]
 
         # Get the most recent user message
         messages = body.get("messages", [])
@@ -341,6 +347,10 @@ class Pipe:
                         cleaned_content.append(content)
                     cleaned_message["content"] = cleaned_content
             cleaned_messages.append(cleaned_message)
+
+        # Trim messages to fit in model's max_tokens
+        logger.debug(f"Trimming message content to max_input_tokens value: {model_props['max_input_tokens']}")
+        cleaned_messages = trim_messages(cleaned_messages, model_name)
 
         # Optional parameters with their default values
         optional_openai_params = {
