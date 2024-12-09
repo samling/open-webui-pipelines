@@ -117,11 +117,15 @@ class Pipe:
     class Valves(BaseModel):
         LITELLM_BASE_URL: str = Field(
             default="http://litellm.litellm:4000",
-            description="(Required) Base URL for LiteLLM.",
+            description="(Optional) Base URL for LiteLLM. If this is set, it will take precedence over a model json file.",
         )
         LITELLM_API_KEY: str = Field(
             default="sk-fake-key",
-            description="(Required) Your LiteLLM master key.",
+            description="(Optional) Your LiteLLM master key. Required if LITELLM_BASE_URL is set.",
+        )
+        LITELLM_MODEL_JSON_PATH: str = Field(
+            default="path/to/models.json",
+            description="(Optional) Path to a json file with a list of LiteLLM models."
         )
         LITELLM_DEBUG: bool = Field(
             default=False, description="(Optional) Enable debugging for litellm."
@@ -130,11 +134,11 @@ class Pipe:
             default=False, description="(Optional) Enable debugging for the pipe."
         )
         LANGFUSE_PUBLIC_KEY: str = Field(
-            default="",
+            default="pk-fake-key",
             description='(Optional) Langfuse public key.'
         )
         LANGFUSE_SECRET_KEY: str = Field(
-            default="",
+            default="sk-fake-key",
             description='(Optional) Langfuse secret key.'
         )
         LANGFUSE_HOST: str = Field(
@@ -153,18 +157,18 @@ class Pipe:
             description="(Optional) Timeout (in seconds) for aiohttp session requests. Default is 5s."
         )
         YOUTUBE_COOKIES_FILEPATH: str = Field(
-            default="",
+            default="path/to/cookies.txt",
             description="(Optional) Path to cookies file from youtube.com to aid in title retrieval for citations."
         )
         VISION_ROUTER_ENABLED: bool = Field(
             default=False, description="(Optional) Enable vision rerouting."
         )
         VISION_MODEL_ID: str = Field(
-            default="",
+            default="fake-reroute-model",
             description="(Optional) The identifier of the vision model to be used for processing images. Must be in litellm format, e.g. gemini/gemini-1.5-pro"
         )
         SKIP_REROUTE_MODELS: list[str] = Field(
-            default_factory=list[None],
+            default_factory=list,
             description="(Optional) A list of model identifiers that should not be re-routed to the chosen vision model.",
         )
         PERPLEXITY_RETURN_CITATIONS: bool = Field(
@@ -187,12 +191,18 @@ class Pipe:
             description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
         )
 
-
     def __init__(self):
         self.type = "manifold"
         self.valves = self.Valves()
         self.user_valves = self.UserValves()
         self._model_list = None
+    
+    def _parse_model_string(self, model_id):
+        """Parse model ID into provider and name components"""
+        parts = model_id.split("/")
+        if len(parts) == 1:
+            return None, parts[0]
+        return parts[0], "/".join(parts[1:])
 
     def _get_model_list(self):
         """
@@ -200,87 +210,126 @@ class Pipe:
         properties to help us set provider-specific parameters later.
         """
         logger.debug("Fetching model list from LiteLLM")
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.valves.LITELLM_API_KEY}",
-        }
+        if (self.valves.LITELLM_BASE_URL
+            and self.valves.LITELLM_API_KEY
+            and self.valves.LITELLM_API_KEY is not "sk-fake-key"
+        ):
+            logger.debug(f"LITELLM_BASE_URL and LITELLM_API_KEY are set; fetching model list from remote endpoint")
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.valves.LITELLM_API_KEY}",
+            }
 
-        try:
-            r = requests.get(
-                f"{self.valves.LITELLM_BASE_URL}/v1/model/info", headers=headers
-            )
-            r.raise_for_status()
-            models = r.json()
-
-            model_list = []
-            for model in models.get("data", []):
-                model_info = model.get("model_info", {})
-                litellm_params = model.get("litellm_params", {})
-                model_list.append(
-                    model
-                    # {
-                    #     "id": model_info.get("id"),
-                    #     "friendly_name": model.get("model_name"),
-                    #     "model_name": litellm_params.get("model"),
-                    #     "provider": model_info.get("litellm_provider"),
-                    #     "supported_openai_params": model_info.get("supported_openai_params"),
-                    #     "max_input_tokens": model_info.get("max_input_tokens"),
-                    # }
+            try:
+                r = requests.get(
+                    f"{self.valves.LITELLM_BASE_URL}/v1/model/info", headers=headers
                 )
+                r.raise_for_status()
+                models = r.json()
 
-            return model_list
+                model_list = []
+                for model in models.get("data", []):
+                    model_list.append(model)
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching models from LiteLLM: {e}")
-            return []
+                return model_list
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error fetching models from LiteLLM: {e}")
+                return []
+
+        elif (self.valves.LITELLM_MODEL_JSON_PATH and self.valves.LITELLM_MODEL_JSON_PATH is not "path/to/models.json":
+            logger.debug(f"LITELLM_MODEL_JSON_PATH is set; fetching model list from file")
+
+            # In Open-WebUI, model lists are just lists of json objects containing the downstream model id and a friendly name.
+            # TODO: We can take the model id...
+            try:
+                # Initialize empty model list
+                model_list = []
+                model_list_path = self.valves.LITELLM_MODEL_JSON_PATH
+
+                # Load model json file
+                with open(model_list_path, 'r') as f:
+                    # Load our own model list
+                    json_model_list = json.load(f)
+                    logger.debug(f"Model list json file:\n\t{pformat(json_model_list)}")
+
+                # Fetch properties from LiteLLM's model_prices_and_context_window.json
+                # https://raw.githubusercontent.com/BerriAI/litellm/refs/heads/main/model_prices_and_context_window.json
+                raw_params = None
+                try:
+                    model_prices_url = "https://raw.githubusercontent.com/BerriAI/litellm/refs/heads/main/model_prices_and_context_window.json"
+                    response = requests.get(model_prices_url)
+                    response.raise_for_status()
+                    raw_params = response.json()
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Error fetching URL '{model_prices_url}': {e}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error decoding json from '{model_prices_url}': {e}")
+
+                def get_possible_keys(model_id):
+                    logger.debug(f"Finding possible keys for {model_id}")
+                    keys = []
+                    # Add full model_id as a possible key
+                    keys.append(model_id)
+                    # Add model_id without provider
+                    _, base_name = self._parse_model_string(model_id)
+                    keys.append(base_name)
+                    logger.debug(f"Possible keys:\n\t{keys}")
+                    # Sort by length, descending, to match longest (most specific) key first
+                    return sorted(keys, key=len, reverse=True)
+
+                for model in json_model_list:
+                    model_id = model['id']
+                    model_name = model['name']
+
+                    # Get possible keys for matching
+                    possible_keys = get_possible_keys(model_id)
+
+                    # Try to find a match in raw_params
+                    matched_key = None
+                    for key in possible_keys:
+                        if key in raw_params:
+                            matched_key = key
+                            break # stop at the first match
+
+                    # Check if we have matching raw parameters
+                    if matched_key:
+                        model_config = raw_params[matched_key]
+
+                        # Construct the model entry
+                        litellm_entry = {
+                            "model_name": model_name,
+                            "litellm_params": {
+                                "model": model_id
+                            },
+                            "model_info": {
+                                "db_model": False,
+                                "key": matched_key,
+                                **model_config
+                            }
+                        }
+                        if not litellm_entry.get("id"):
+                            litellm_entry['id'] = model_id
+
+
+                        model_list.append(litellm_entry)
+                        logger.debug(f"Added model to list: {pformat(litellm_entry)}")
+                    else:
+                        logger.warning(f"No raw parameters found for model: {model_id}")
+
+                return model_list
+
+            except FileNotFoundError:
+                logger.error(f"Error: File not found at {self.valves.LITELLM_MODEL_JSON_PATH}")
+                return None
+            except json.JSONDecodeError:
+                logger.error(f"Error: Invalid JSON format in '{self.valves.LITELLM_MODEL_JSON_PATH}")
+                return None
+        else:
+            logger.error(f"No LiteLLM endpoint or model json file are specified; unable to load models")
     
     def _get_litellm_model_props_by_model_name(self, model_name) -> Dict | None:
-        # {
-        #     "model_name": "gpt-4o-2024-11-20",
-        #     "litellm_params": {
-        #         "model": "gpt-4o-2024-11-20"
-        #     },
-        #     "model_info": {
-        #         "id": "83ac0666d5e4f6c170e19c5809eb9fe0563a3c7488342114a11384fe6e268562",
-        #         "db_model": false,
-        #         "key": "gpt-4o-2024-11-20",
-        #         "max_tokens": 16384,
-        #         "max_input_tokens": 128000,
-        #         "max_output_tokens": 16384,
-        #         "input_cost_per_token": 0.0000025,
-        #         "cache_creation_input_token_cost": null,
-        #         "cache_read_input_token_cost": 0.00000125,
-        #         "input_cost_per_character": null,
-        #         "input_cost_per_token_above_128k_tokens": null,
-        #         "input_cost_per_query": null,
-        #         "input_cost_per_second": null,
-        #         "input_cost_per_audio_token": null,
-        #         "output_cost_per_token": 0.00001,
-        #         "output_cost_per_audio_token": null,
-        #         "output_cost_per_character": null,
-        #         "output_cost_per_token_above_128k_tokens": null,
-        #         "output_cost_per_character_above_128k_tokens": null,
-        #         "output_cost_per_second": null,
-        #         "output_cost_per_image": null,
-        #         "output_vector_size": null,
-        #         "litellm_provider": "openai",
-        #         "mode": "chat",
-        #         "supported_openai_params": [
-        #            (...)
-        #         ],
-        #         "supports_system_messages": null,
-        #         "supports_response_schema": true,
-        #         "supports_vision": true,
-        #         "supports_function_calling": true,
-        #         "supports_assistant_prefill": false,
-        #         "supports_prompt_caching": true,
-        #         "supports_audio_input": false,
-        #         "supports_audio_output": false,
-        #         "supports_pdf_input": false,
-        #         "tpm": null,
-        #         "rpm": null
-        #     }
-        # },
+        """Fetch properties from the LiteLLM proxy API"""
         model = next((m for m in self._model_list if m["litellm_params"]["model"] == model_name), None)
         logger.debug(f"Retrieved properties for model {model_name}:\n\t{pformat(model)}")
         return model if model else None
@@ -363,7 +412,7 @@ class Pipe:
         # Set the model to the vision model if it's defined and there's an image in the most recent user message
         if has_images:
             logger.debug(f"Found image in last user message; attempting to reroute request to vision model")
-            if self.valves.VISION_MODEL_ID:
+            if self.valves.VISION_MODEL_ID and self.valves.VISION_MODEL_ID is not "fake-reroute-model":
                 # If we're not already using the rerouted models and we're not using a model that we want to skip rerouting in, reroute it
                 if model_name != self.valves.VISION_MODEL_ID and model_name not in self.valves.SKIP_REROUTE_MODELS:
                     model_name = self.valves.VISION_MODEL_ID
@@ -472,7 +521,7 @@ class Pipe:
                         'no_warnings': True,
                         'extract_flat': True
                     }
-                    if hasattr(self.valves, 'YOUTUBE_COOKIES_FILEPATH') and self.valves.YOUTUBE_COOKIES_FILEPATH:
+                    if hasattr(self.valves, 'YOUTUBE_COOKIES_FILEPATH') and self.valves.YOUTUBE_COOKIES_FILEPATH and self.valves.YOUTUBE_COOKIES_FILEPATH is not "path/to/cookies.txt":
                         ydl_opts['cookiefile'] = self.valves.YOUTUBE_COOKIES_FILEPATH
 
                     try:
@@ -667,7 +716,12 @@ class Pipe:
             litellm.json_logs = False
             litellm.suppress_debug_info = True
 
-        if self.valves.LANGFUSE_PUBLIC_KEY and self.valves.LANGFUSE_SECRET_KEY and self.valves.LANGFUSE_HOST:
+        if (self.valves.LANGFUSE_PUBLIC_KEY
+            and self.valves.LANGFUSE_SECRET_KEY
+            and self.valves.LANGFUSE_PUBLIC_KEY is not "pk-fake-key"
+            and self.valves.LANGFUSE_SECRET_KEY is not "sk-fake-key"
+            and self.valves.LANGFUSE_HOST
+        ):
             logger.debug("Langfuse credentials and host present; traces are enabled")
             litellm.success_callback = ["langfuse"]
             litellm.failure_callback = ["langfuse"]
