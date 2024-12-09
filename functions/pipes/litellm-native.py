@@ -237,7 +237,7 @@ class Pipe:
                 logger.error(f"Error fetching models from LiteLLM: {e}")
                 return []
 
-        elif (self.valves.LITELLM_MODEL_JSON_PATH and self.valves.LITELLM_MODEL_JSON_PATH is not "path/to/models.json":
+        elif self.valves.LITELLM_MODEL_JSON_PATH and self.valves.LITELLM_MODEL_JSON_PATH is not "path/to/models.json":
             logger.debug(f"LITELLM_MODEL_JSON_PATH is set; fetching model list from file")
 
             # In Open-WebUI, model lists are just lists of json objects containing the downstream model id and a friendly name.
