@@ -5,7 +5,7 @@ date: 2024-05-30
 version: 1.0.1
 license: MIT
 description: A manifold pipe that uses LiteLLM.
-requirements: beautifulsoup4, yt_dlp, litellm
+requirements: beautifulsoup4, yt_dlp, litellm>=1.54
 """
 
 from bs4 import BeautifulSoup
@@ -142,7 +142,7 @@ class Pipe:
             description='(Optional) Langfuse secret key.'
         )
         LANGFUSE_HOST: str = Field(
-            default="http://langfuse.langfuse:3000",
+            default="http://langfuse-web.langfuse:3000",
             description='(Optional) Langfuse host.'
         )
         EXTRA_METADATA: str = Field(
