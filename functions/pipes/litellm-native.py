@@ -5,7 +5,7 @@ date: 2024-05-30
 version: 1.0.1
 license: MIT
 description: A manifold pipe that uses LiteLLM.
-requirements: beautifulsoup4, yt_dlp, litellm>=1.54
+requirements: beautifulsoup4, yt_dlp, litellm, google-cloud-aiplatform 
 """
 
 from bs4 import BeautifulSoup
@@ -180,6 +180,18 @@ class Pipe:
         PERPLEXITY_RETURN_RELATED_QUESTIONS: bool = Field(
             default=False, description="(Optional) Enable related question retrieval for Perplexity models. Note: This is a beta feature."
         )
+        GOOGLE_APPLICATION_CREDENTIALS: str = Field(
+            default="path/to/gcp_config.json",
+            description="(Optional) The path to the google applications JSON for VertexAI."
+        )
+        # VERTEXAI_PROJECT: str = Field(
+        #     default="fake-project-id",
+        #     description="(Optional) The name of the project in VertexAI."
+        # )
+        # VERTEXAI_LOCATION: str = Field(
+        #     default="us-west4",
+        #     description="(Optional) The location of the project in VertexAI."
+        # )
         pass
 
     class UserValves(BaseModel):
