@@ -5,7 +5,7 @@ date: 2024-05-30
 version: 1.0.1
 license: MIT
 description: A manifold pipe that uses LiteLLM.
-requirements: beautifulsoup4, yt_dlp, litellm>=1.54
+requirements: beautifulsoup4, yt_dlp, litellm, google-cloud-aiplatform 
 """
 
 from bs4 import BeautifulSoup
@@ -19,6 +19,7 @@ import aiohttp
 import json
 import litellm
 import logging
+import os
 import re
 import requests
 
@@ -180,6 +181,18 @@ class Pipe:
         PERPLEXITY_RETURN_RELATED_QUESTIONS: bool = Field(
             default=False, description="(Optional) Enable related question retrieval for Perplexity models. Note: This is a beta feature."
         )
+        GOOGLE_APPLICATION_CREDENTIALS: str = Field(
+            default="path/to/gcp_config.json",
+            description="(Optional) The path to the google applications JSON for VertexAI."
+        )
+        # VERTEXAI_PROJECT: str = Field(
+        #     default="fake-project-id",
+        #     description="(Optional) The name of the project in VertexAI."
+        # )
+        # VERTEXAI_LOCATION: str = Field(
+        #     default="us-west4",
+        #     description="(Optional) The location of the project in VertexAI."
+        # )
         pass
 
     class UserValves(BaseModel):
@@ -725,6 +738,12 @@ class Pipe:
             logger.debug("Langfuse credentials and host present; traces are enabled")
             litellm.success_callback = ["langfuse"]
             litellm.failure_callback = ["langfuse"]
+
+        if (self.valves.GOOGLE_APPLICATION_CREDENTIALS
+            and self.valves.GOOGLE_APPLICATION_CREDENTIALS is not "path/to/gcp_config.json"
+        ):
+            logger.debug(f"Google application credentials were set to path: {self.valves.GOOGLE_APPLICATION_CREDENTIALS}")
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self.valves.GOOGLE_APPLICATION_CREDENTIALS
 
         logger.debug("pipes() called - fetching model list")
         self._model_list = self._get_model_list()
