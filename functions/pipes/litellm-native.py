@@ -19,6 +19,7 @@ import aiohttp
 import json
 import litellm
 import logging
+import os
 import re
 import requests
 
@@ -737,6 +738,12 @@ class Pipe:
             logger.debug("Langfuse credentials and host present; traces are enabled")
             litellm.success_callback = ["langfuse"]
             litellm.failure_callback = ["langfuse"]
+
+        if (self.valves.GOOGLE_APPLICATION_CREDENTIALS
+            and self.valves.GOOGLE_APPLICATION_CREDENTIALS is not "path/to/gcp_config.json"
+        ):
+            logger.debug(f"Google application credentials were set to path: {self.valves.GOOGLE_APPLICATION_CREDENTIALS}")
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self.valves.GOOGLE_APPLICATION_CREDENTIALS
 
         logger.debug("pipes() called - fetching model list")
         self._model_list = self._get_model_list()
