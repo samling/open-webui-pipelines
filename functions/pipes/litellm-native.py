@@ -203,6 +203,10 @@ class Pipe:
             default='',
             description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
         )
+        ENABLE_GEMINI_GROUNDING: bool = Field(
+            default=False,
+            description="(Optional) Enable Google search grounding for Gemini models."
+        )
 
     def __init__(self):
         self.type = "manifold"
@@ -478,8 +482,25 @@ class Pipe:
                 "return_citations": self.valves.PERPLEXITY_RETURN_CITATIONS,
                 "return_images": self.valves.PERPLEXITY_RETURN_IMAGES,
                 "return_related_questions": self.valves.PERPLEXITY_RETURN_RELATED_QUESTIONS,
-            }
+            },
+            "vertex_ai": {}
         })
+
+        if user_valves.ENABLE_GEMINI_GROUNDING:
+            if (
+                provider == "vertex_ai" and
+                (
+                    litellm_model_props["model_name"].startswith("gemini-2.0")
+                    or litellm_model_props["model_name"].startswith("gemini-exp")
+                )
+            ):
+                logger.debug(f"Grounding enabled with 'googleSearch' tool for {model_name}")
+                provider_params["vertex_ai"]["tools"] = [{"googleSearch": {}}]
+            elif provider == "vertex_ai" and litellm_model_props["model_name"].startswith("gemini-"):
+                logger.debug(f"Grounding enabled with 'googleSearchRetrieval' tool for {model_name}")
+                provider_params["vertex_ai"]["tools"] = [{"googleSearchRetrieval": {}}]
+            else:
+                logger.debug(f"{model_name} is incompatible with grounding.")
 
         # Final payload with base properties
         payload = {
