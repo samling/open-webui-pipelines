@@ -554,11 +554,25 @@ class Pipe:
             ) as response:
                 try:
                     response_json = await response.json()
+                    logger.debug(f"response_json: {pformat(response_json)}")
                     if "choices" in response_json and len(response_json["choices"]) > 0:
-                        return response_json["choices"][0]["message"]["content"]
+                        content = response_json["choices"][0]["message"]["content"]
+                        logger.debug(f"Accumulated content: {content}")
                     else:
                         logger.error(f"Unexpected response format: {response_json}")
                         return "Error: Unexpected response format from API"
+
+                    if not is_title_gen:
+                        if response_json.get("citations") and response_json["citations"] and len(response_json["citations"]) > 0:
+                            content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
+                            citations_list = await self._build_citation_list(response_json["citations"])
+                            content += "\n\n<details>\n<summary>Sources</summary>\n"
+                            for i, citation in enumerate(citations_list, 1):
+                                content += f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+                            content += "\n</details>"
+
+                    return content
+
                 except Exception as e:
                     logger.error(f"Error processing response: {str(e)}")
                     return f"Error: {str(e)}"              
@@ -627,26 +641,12 @@ class Pipe:
 
         citations = set()
 
-        manifold_name, model_id = self._parse_model_string(body["model"])
-
         try:
             emitter = EventEmitter(__event_emitter__)
-
-            system_message, messages = pop_system_message(body.get("messages", []))
-            system_prompt = "You are a helpful assistant."
-            if system_message is not None:
-                system_prompt = system_message["content"]
 
             metadata = await self._build_metadata(__user__, __metadata__, user_valves)
             payload = await self._build_completion_payload(body, __user__, metadata, user_valves, emitter)
 
-            # payload = {
-            #     "model": model_id,
-            #     "messages": [{"role": "system", "content": system_prompt}, *messages],
-            #     "stream": body.get("stream", True),
-            #     "return_citations": True,
-            #     "return_images": True,
-            # }
             logger.debug(f"Payload: {pformat(payload)}")
 
             try:
