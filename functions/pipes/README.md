@@ -6,20 +6,20 @@ Install these pipes by navigating to Admin Settings > Functions, creating a new 
 
 | name        | openai-compatible | manifold progress |
 | ---         | ---               | ---   |
-| anthropic   | no                | - [ ] |
-| aws bedrock | no                | - [ ] |
-| codestral   | no                | - [ ] |
-| cohere      | no                | - [ ] |
-| deepinfra   | yes               | - [ ] |
-| deepseek    | yes               | - [ ] |
-| gemini      | no                | - [ ] |
-| litellm     | yes               | - [x] |
-| mistral     | no                | - [ ] |
-| ollama      | yes(?)            | - [ ] |
-| perplexity  | no                | - [x] |
-| togetherai  | yes               | - [ ] |
-| vertex      | no                | - [ ] |
-| voyage      | no                | - [ ] |
+| anthropic   | no                | &#9744; |
+| aws bedrock | no                | &#9744; |
+| codestral   | no                | &#9744; |
+| cohere      | no                | &#9744; |
+| deepinfra   | yes               | &#9744; |
+| deepseek    | yes               | &#9744; |
+| gemini      | no                | &#9744; |
+| litellm     | yes               | :white_check_mark: |
+| mistral     | no                | &#9744; |
+| ollama      | yes(?)            | &#9744; |
+| perplexity  | no                | :white_check_mark: |
+| togetherai  | yes               | &#9744; |
+| vertex      | no                | &#9744; |
+| voyage      | no                | &#9744; |
 
 ## Pipes
 
