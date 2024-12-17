@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from typing import AsyncGenerator, Optional, Union, Generator, Iterator, Callable, Any, Awaitable
 from utils.misc import get_last_user_message
 from utils.misc import pop_system_message
+from pprint import pformat
 
 import aiohttp
 import json
@@ -184,24 +185,16 @@ class Pipe:
         """
         Handle non-streaming responses.
         """
-        accumulated_content = ""
-
-        async for line in response.content:
-            if line:
-                line = line.decode("utf-8")
-                if line.startswith("data: "):
-                    try:
-                        json_data = json.loads(line[6:])  # Remove 'data:' prefix
-                        if "choices" in json_data and json_data["choices"]:
-                            delta = json_data["choices"][0].get("delta", {})
-                            if "content" in delta:
-                                accumulated_content += delta["content"]
-                    except json.JSONDecodeError:
-                        continue
-
-        logger.debug(f"Accumulated content: {accumulated_content}")
-
-        return accumulated_content
+        try:
+            response_json = await response.json()
+            if "choices" in response_json and len(response_json["choices"]) > 0:
+                return response_json["choices"][0]["message"]["content"]
+            else:
+                logger.error(f"Unexpected response format: {response_json}")
+                return "Error: Unexpected response format from API"
+        except Exception as e:
+            logger.error(f"Error processing response: {str(e)}")
+            return f"Error: {str(e)}"              
 
     def pipes(self):
         global logger
