@@ -16,7 +16,7 @@ Install these pipes by navigating to Admin Settings > Functions, creating a new 
 | litellm     | yes               | :white_check_mark: |
 | mistral     | no                |  |
 | ollama      | yes(?)            |  |
-| perplexity  | no                | :white_check_mark: |
+| perplexity  | kinda             | :white_check_mark: |
 | togetherai  | yes               |  |
 | vertex      | no                |  |
 | voyage      | no                |  |
