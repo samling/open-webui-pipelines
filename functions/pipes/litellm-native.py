@@ -52,22 +52,18 @@ def load_json(user_value: str, as_list: bool = False) -> Union[Dict, List]:
         logger.error(f"Error loading JSON: {e}, Value: {user_value}")
         return [] if as_list else {}
 
+
 class EventEmitter:
     def __init__(self, event_emitter: Callable[[dict], Any] = None):
         self.event_emitter = event_emitter
 
     async def emit_message(self, content=""):
         if self.event_emitter:
-            await self.event_emitter(
-                {
-                    "type": "message",
-                    "data": {
-                        "content": content
-                    }
-                }
-            )
+            await self.event_emitter({"type": "message", "data": {"content": content}})
 
-    async def emit_status(self, description="Unknown State", status="in_progress", done=False):
+    async def emit_status(
+        self, description="Unknown State", status="in_progress", done=False
+    ):
         if self.event_emitter:
             await self.event_emitter(
                 {
@@ -87,17 +83,9 @@ class EventEmitter:
                     "type": "source",
                     "data": {
                         "document": [document],
-                        "metadata": [
-                            {
-                                "source": name,
-                                "html": html
-                            }
-                        ],
-                        "source": {
-                            "name": name,
-                            "url": url
-                        }
-                    }
+                        "metadata": [{"source": name, "html": html}],
+                        "source": {"name": name, "url": url},
+                    },
                 }
             )
 
@@ -109,10 +97,11 @@ class EventEmitter:
                     "data": {
                         "document": document,
                         "metadata": metadata,
-                        "source": source
-                    }
+                        "source": source,
+                    },
                 }
             )
+
 
 class Pipe:
     class Valves(BaseModel):
@@ -126,7 +115,7 @@ class Pipe:
         )
         LITELLM_MODEL_JSON_PATH: str = Field(
             default="path/to/models.json",
-            description="(Optional) Path to a json file with a list of LiteLLM models."
+            description="(Optional) Path to a json file with a list of LiteLLM models.",
         )
         LITELLM_DEBUG: bool = Field(
             default=False, description="(Optional) Enable debugging for litellm."
@@ -135,19 +124,18 @@ class Pipe:
             default=False, description="(Optional) Enable debugging for the pipe."
         )
         LANGFUSE_PUBLIC_KEY: str = Field(
-            default="pk-fake-key",
-            description='(Optional) Langfuse public key.'
+            default="pk-fake-key", description="(Optional) Langfuse public key."
         )
         LANGFUSE_SECRET_KEY: str = Field(
-            default="sk-fake-key",
-            description='(Optional) Langfuse secret key.'
+            default="sk-fake-key", description="(Optional) Langfuse secret key."
         )
         LANGFUSE_HOST: str = Field(
             default="http://langfuse-web.langfuse:3000",
-            description='(Optional) Langfuse host.'
+            description="(Optional) Langfuse host.",
         )
         EXTRA_METADATA: str = Field(
-            default="{}", description='(Optional) Additional metadata, e.g. {"key": "value"}'
+            default="{}",
+            description='(Optional) Additional metadata, e.g. {"key": "value"}',
         )
         EXTRA_TAGS: str = Field(
             default='["open-webui"]',
@@ -155,35 +143,38 @@ class Pipe:
         )
         REQUEST_TIMEOUT: int = Field(
             default=5,
-            description="(Optional) Timeout (in seconds) for aiohttp session requests. Default is 5s."
+            description="(Optional) Timeout (in seconds) for aiohttp session requests. Default is 5s.",
         )
         YOUTUBE_COOKIES_FILEPATH: str = Field(
             default="path/to/cookies.txt",
-            description="(Optional) Path to cookies file from youtube.com to aid in title retrieval for citations."
+            description="(Optional) Path to cookies file from youtube.com to aid in title retrieval for citations.",
         )
         VISION_ROUTER_ENABLED: bool = Field(
             default=False, description="(Optional) Enable vision rerouting."
         )
         VISION_MODEL_ID: str = Field(
             default="fake-reroute-model",
-            description="(Optional) The identifier of the vision model to be used for processing images. Must be in litellm format, e.g. gemini/gemini-1.5-pro"
+            description="(Optional) The identifier of the vision model to be used for processing images. Must be in litellm format, e.g. gemini/gemini-1.5-pro",
         )
         SKIP_REROUTE_MODELS: list[str] = Field(
             default_factory=list,
             description="(Optional) A list of model identifiers that should not be re-routed to the chosen vision model.",
         )
         PERPLEXITY_RETURN_CITATIONS: bool = Field(
-            default=True, description="(Optional) Enable citation retrieval for Perplexity models."
+            default=True,
+            description="(Optional) Enable citation retrieval for Perplexity models.",
         )
         PERPLEXITY_RETURN_IMAGES: bool = Field(
-            default=False, description="(Optional) Enable image retrieval for Perplexity models. Note: This is a beta feature."
+            default=False,
+            description="(Optional) Enable image retrieval for Perplexity models. Note: This is a beta feature.",
         )
         PERPLEXITY_RETURN_RELATED_QUESTIONS: bool = Field(
-            default=False, description="(Optional) Enable related question retrieval for Perplexity models. Note: This is a beta feature."
+            default=False,
+            description="(Optional) Enable related question retrieval for Perplexity models. Note: This is a beta feature.",
         )
         GOOGLE_APPLICATION_CREDENTIALS: str = Field(
             default="path/to/gcp_config.json",
-            description="(Optional) The path to the google applications JSON for VertexAI."
+            description="(Optional) The path to the google applications JSON for VertexAI.",
         )
         # VERTEXAI_PROJECT: str = Field(
         #     default="fake-project-id",
@@ -197,10 +188,11 @@ class Pipe:
 
     class UserValves(BaseModel):
         EXTRA_METADATA: str = Field(
-            default="", description='(Optional) Additional metadata, e.g. {"key": "value"}'
+            default="",
+            description='(Optional) Additional metadata, e.g. {"key": "value"}',
         )
         EXTRA_TAGS: str = Field(
-            default='',
+            default="",
             description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
         )
 
@@ -209,7 +201,7 @@ class Pipe:
         self.valves = self.Valves()
         self.user_valves = self.UserValves()
         self._model_list = None
-    
+
     def _parse_model_string(self, model_id):
         """Parse model ID into provider and name components"""
         parts = model_id.split("/")
@@ -223,11 +215,14 @@ class Pipe:
         properties to help us set provider-specific parameters later.
         """
         logger.debug("Fetching model list from LiteLLM")
-        if (self.valves.LITELLM_BASE_URL
+        if (
+            self.valves.LITELLM_BASE_URL
             and self.valves.LITELLM_API_KEY
             and self.valves.LITELLM_API_KEY is not "sk-fake-key"
         ):
-            logger.debug(f"LITELLM_BASE_URL and LITELLM_API_KEY are set; fetching model list from remote endpoint")
+            logger.debug(
+                f"LITELLM_BASE_URL and LITELLM_API_KEY are set; fetching model list from remote endpoint"
+            )
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.valves.LITELLM_API_KEY}",
@@ -250,8 +245,13 @@ class Pipe:
                 logger.error(f"Error fetching models from LiteLLM: {e}")
                 return []
 
-        elif self.valves.LITELLM_MODEL_JSON_PATH and self.valves.LITELLM_MODEL_JSON_PATH is not "path/to/models.json":
-            logger.debug(f"LITELLM_MODEL_JSON_PATH is set; fetching model list from file")
+        elif (
+            self.valves.LITELLM_MODEL_JSON_PATH
+            and self.valves.LITELLM_MODEL_JSON_PATH is not "path/to/models.json"
+        ):
+            logger.debug(
+                f"LITELLM_MODEL_JSON_PATH is set; fetching model list from file"
+            )
 
             # In Open-WebUI, model lists are just lists of json objects containing the downstream model id and a friendly name.
             # TODO: We can take the model id...
@@ -261,7 +261,7 @@ class Pipe:
                 model_list_path = self.valves.LITELLM_MODEL_JSON_PATH
 
                 # Load model json file
-                with open(model_list_path, 'r') as f:
+                with open(model_list_path, "r") as f:
                     # Load our own model list
                     json_model_list = json.load(f)
                     logger.debug(f"Model list json file:\n\t{pformat(json_model_list)}")
@@ -292,8 +292,8 @@ class Pipe:
                     return sorted(keys, key=len, reverse=True)
 
                 for model in json_model_list:
-                    model_id = model['id']
-                    model_name = model['name']
+                    model_id = model["id"]
+                    model_name = model["name"]
 
                     # Get possible keys for matching
                     possible_keys = get_possible_keys(model_id)
@@ -303,7 +303,7 @@ class Pipe:
                     for key in possible_keys:
                         if key in raw_params:
                             matched_key = key
-                            break # stop at the first match
+                            break  # stop at the first match
 
                     # Check if we have matching raw parameters
                     if matched_key:
@@ -312,18 +312,15 @@ class Pipe:
                         # Construct the model entry
                         litellm_entry = {
                             "model_name": model_name,
-                            "litellm_params": {
-                                "model": model_id
-                            },
+                            "litellm_params": {"model": model_id},
                             "model_info": {
                                 "db_model": False,
                                 "key": matched_key,
-                                **model_config
-                            }
+                                **model_config,
+                            },
                         }
                         if not litellm_entry.get("id"):
-                            litellm_entry['id'] = model_id
-
+                            litellm_entry["id"] = model_id
 
                         model_list.append(litellm_entry)
                         logger.debug(f"Added model to list: {pformat(litellm_entry)}")
@@ -333,18 +330,29 @@ class Pipe:
                 return model_list
 
             except FileNotFoundError:
-                logger.error(f"Error: File not found at {self.valves.LITELLM_MODEL_JSON_PATH}")
+                logger.error(
+                    f"Error: File not found at {self.valves.LITELLM_MODEL_JSON_PATH}"
+                )
                 return None
             except json.JSONDecodeError:
-                logger.error(f"Error: Invalid JSON format in '{self.valves.LITELLM_MODEL_JSON_PATH}")
+                logger.error(
+                    f"Error: Invalid JSON format in '{self.valves.LITELLM_MODEL_JSON_PATH}"
+                )
                 return None
         else:
-            logger.error(f"No LiteLLM endpoint or model json file are specified; unable to load models")
-    
+            logger.error(
+                f"No LiteLLM endpoint or model json file are specified; unable to load models"
+            )
+
     def _get_litellm_model_props_by_model_name(self, model_name) -> Dict | None:
         """Fetch properties from the LiteLLM proxy API"""
-        model = next((m for m in self._model_list if m["litellm_params"]["model"] == model_name), None)
-        logger.debug(f"Retrieved properties for model {model_name}:\n\t{pformat(model)}")
+        model = next(
+            (m for m in self._model_list if m["litellm_params"]["model"] == model_name),
+            None,
+        )
+        logger.debug(
+            f"Retrieved properties for model {model_name}:\n\t{pformat(model)}"
+        )
         return model if model else None
 
     async def _build_metadata(self, __user__, __metadata__, user_valves):
@@ -383,7 +391,7 @@ class Pipe:
         __user__: dict,
         metadata: dict,
         user_valves: UserValves,
-        emitter: EventEmitter
+        emitter: EventEmitter,
     ) -> dict:
         """
         Build the final payload, including the metadata from _build_metadata
@@ -393,7 +401,9 @@ class Pipe:
         # Models from this pipe look like e.g. "litellm_native.gpt-4o" or "litellm_native.anthropic/claude-3.5-sonnet"
         logger.debug(f"Model from open-webui request: {body['model']}")
         model_parts = body["model"].split(".", 1)
-        model_name = model_parts[1] if len(model_parts) > 1 else body["model"] # "gpt-4o", "anthropic/claude-3.5-sonnet"
+        model_name = (
+            model_parts[1] if len(model_parts) > 1 else body["model"]
+        )  # "gpt-4o", "anthropic/claude-3.5-sonnet"
 
         # We have to go retrieve our properties from the original self._model_list by using the model_name from the body
         litellm_model_props = self._get_litellm_model_props_by_model_name(model_name)
@@ -409,7 +419,9 @@ class Pipe:
         system_message, messages = pop_system_message(messages)
         system_prompt = "You are a helpful assistant."
         if system_message is not None:
-            logger.debug(f"Using non-default system prompt: {system_message['content']}")
+            logger.debug(
+                f"Using non-default system prompt: {system_message['content']}"
+            )
             system_prompt = system_message["content"]
 
         # Check for images in the last user message by inspecting the messages directly
@@ -424,14 +436,27 @@ class Pipe:
 
         # Set the model to the vision model if it's defined and there's an image in the most recent user message
         if has_images:
-            logger.debug(f"Found image in last user message; attempting to reroute request to vision model")
-            if self.valves.VISION_MODEL_ID and self.valves.VISION_MODEL_ID is not "fake-reroute-model":
+            logger.debug(
+                f"Found image in last user message; attempting to reroute request to vision model"
+            )
+            if (
+                self.valves.VISION_MODEL_ID
+                and self.valves.VISION_MODEL_ID is not "fake-reroute-model"
+            ):
                 # If we're not already using the rerouted models and we're not using a model that we want to skip rerouting in, reroute it
-                if model_name != self.valves.VISION_MODEL_ID and model_name not in self.valves.SKIP_REROUTE_MODELS:
+                if (
+                    model_name != self.valves.VISION_MODEL_ID
+                    and model_name not in self.valves.SKIP_REROUTE_MODELS
+                ):
                     model_name = self.valves.VISION_MODEL_ID
-                    await emitter.emit_status(description=f"Request routed to {self.valves.VISION_MODEL_ID}", done=True)
+                    await emitter.emit_status(
+                        description=f"Request routed to {self.valves.VISION_MODEL_ID}",
+                        done=True,
+                    )
                 else:
-                    logger.debug(f"Model is the same as target vision model or is in SKIP_REROUTE_MODELS")
+                    logger.debug(
+                        f"Model is the same as target vision model or is in SKIP_REROUTE_MODELS"
+                    )
 
         # Clean base64-encoded images from previous messages
         logger.debug(f"Stripping encoded image data from past messages")
@@ -439,27 +464,31 @@ class Pipe:
         for message in messages:
             cleaned_message = message.copy()
             if isinstance(message.get("content"), list):
-                if (message["role"] == "user" and 
-                    any(item.get("type") == "text" and item.get("text") == last_user_message_content
-                        for item in message["content"])):
+                if message["role"] == "user" and any(
+                    item.get("type") == "text"
+                    and item.get("text") == last_user_message_content
+                    for item in message["content"]
+                ):
                     # Keep the current message intact
                     cleaned_message = message
                 else:
                     # Clean up old messages
                     cleaned_content = []
                     for content in message["content"]:
-                        if content.get("type") == "image_url" and "url" in content["image_url"]:
+                        if (
+                            content.get("type") == "image_url"
+                            and "url" in content["image_url"]
+                        ):
                             if content["image_url"]["url"].startswith("data:image"):
-                                content = {
-                                    "type": "text",
-                                    "text": "[Previous Image]"
-                                }
+                                content = {"type": "text", "text": "[Previous Image]"}
                         cleaned_content.append(content)
                     cleaned_message["content"] = cleaned_content
             cleaned_messages.append(cleaned_message)
 
         # Trim messages to fit in model's max_tokens
-        logger.debug(f"Trimming message content to max_input_tokens value: {litellm_model_props['model_info']['max_input_tokens']}")
+        logger.debug(
+            f"Trimming message content to max_input_tokens value: {litellm_model_props['model_info']['max_input_tokens']}"
+        )
         cleaned_messages = trim_messages(cleaned_messages, model_name)
 
         # Optional parameters with their default values
@@ -473,19 +502,24 @@ class Pipe:
         }
 
         # Provider-specific parameters
-        provider_params = dict({
-            "perplexity": {
-                "return_citations": self.valves.PERPLEXITY_RETURN_CITATIONS,
-                "return_images": self.valves.PERPLEXITY_RETURN_IMAGES,
-                "return_related_questions": self.valves.PERPLEXITY_RETURN_RELATED_QUESTIONS,
+        provider_params = dict(
+            {
+                "perplexity": {
+                    "return_citations": self.valves.PERPLEXITY_RETURN_CITATIONS,
+                    "return_images": self.valves.PERPLEXITY_RETURN_IMAGES,
+                    "return_related_questions": self.valves.PERPLEXITY_RETURN_RELATED_QUESTIONS,
+                }
             }
-        })
+        )
 
         # Final payload with base properties
         payload = {
-            "model": model_name, # optional vision model if image in last message
-            "messages": [{"role": "system", "content": system_prompt}, *cleaned_messages], # only most recent message contains data blobs
-            "drop_params": True, # drop unsupported openai parameters from models that don't support them
+            "model": model_name,  # optional vision model if image in last message
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *cleaned_messages,
+            ],  # only most recent message contains data blobs
+            "drop_params": True,  # drop unsupported openai parameters from models that don't support them
         }
 
         # Only add openai parameters that differ from defaults
@@ -499,7 +533,9 @@ class Pipe:
             for param_name, param_value in provider_params[provider].items():
                 if param_value is not None:
                     payload[param_name] = param_value
-                    logger.debug(F"Added {param_name}={param_value} from valve settings")
+                    logger.debug(
+                        f"Added {param_name}={param_value} from valve settings"
+                    )
                 elif param_name in body:
                     payload[param_name] = body[param_name]
                     logger.debug(f"Added {param_name}={param_value} from body")
@@ -519,34 +555,37 @@ class Pipe:
         import yt_dlp as ytdl
 
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
         }
 
         try:
             if "youtube.com" in url or "youtu.be" in url:
-                    ydl_opts = {
-                        'quiet': True,
-                        'no_warnings': True,
-                        'extract_flat': True
-                    }
-                    if hasattr(self.valves, 'YOUTUBE_COOKIES_FILEPATH') and self.valves.YOUTUBE_COOKIES_FILEPATH and self.valves.YOUTUBE_COOKIES_FILEPATH is not "path/to/cookies.txt":
-                        ydl_opts['cookiefile'] = self.valves.YOUTUBE_COOKIES_FILEPATH
+                ydl_opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+                if (
+                    hasattr(self.valves, "YOUTUBE_COOKIES_FILEPATH")
+                    and self.valves.YOUTUBE_COOKIES_FILEPATH
+                    and self.valves.YOUTUBE_COOKIES_FILEPATH
+                    is not "path/to/cookies.txt"
+                ):
+                    ydl_opts["cookiefile"] = self.valves.YOUTUBE_COOKIES_FILEPATH
 
-                    try:
-                        with ytdl.YoutubeDL(ydl_opts) as ydl:
-                            info = ydl.extract_info(url, download=False)
-                            return f"YouTube - {info.get('title', url)}"
-                    except Exception as e:
-                        logger.warning(f"Failed to retrieve youtube title from url: {url}")
+                try:
+                    with ytdl.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        return f"YouTube - {info.get('title', url)}"
+                except Exception as e:
+                    logger.warning(f"Failed to retrieve youtube title from url: {url}")
             else:
                 async with aiohttp.ClientSession() as session:
                     try:
-                        async with session.get(url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT) as response:
+                        async with session.get(
+                            url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT
+                        ) as response:
                             if response.status == 200:
                                 html = await response.text()
                                 soup = BeautifulSoup(html, "html.parser")
@@ -555,7 +594,7 @@ class Pipe:
                                 meta_title = soup.find("meta", property="og:title")
                                 if meta_title and meta_title.get("content"):
                                     return meta_title["content"].strip()
-                                
+
                                 # Fall back to regular title
                                 if soup.title and soup.title.string:
                                     return soup.title.string.strip()
@@ -564,15 +603,25 @@ class Pipe:
                                 if soup.h1:
                                     return soup.h1.get_text().strip()
                             else:
-                                logger.warning(f"Failed to retrieve url: {url} (status code {response.status})")
+                                logger.warning(
+                                    f"Failed to retrieve url: {url} (status code {response.status})"
+                                )
                     except aiohttp.ClientError as e:
-                        logger.warning(f"Initial request failed, trying with different User-Agent: {str(e)}")
+                        logger.warning(
+                            f"Initial request failed, trying with different User-Agent: {str(e)}"
+                        )
 
                         # Try with a mobile user agent
-                        headers['User-Agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1'
+                        headers["User-Agent"] = (
+                            "Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1"
+                        )
 
                         try:
-                            async with session.get(url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT) as response:
+                            async with session.get(
+                                url,
+                                headers=headers,
+                                timeout=self.valves.REQUEST_TIMEOUT,
+                            ) as response:
                                 if response.status == 200:
                                     html = await response.text()
                                     soup = BeautifulSoup(html, "html.parser")
@@ -581,7 +630,7 @@ class Pipe:
                                     meta_title = soup.find("meta", property="og:title")
                                     if meta_title and meta_title.get("content"):
                                         return meta_title["content"].strip()
-                                    
+
                                     # Fall back to regular title
                                     if soup.title and soup.title.string:
                                         return soup.title.string.strip()
@@ -590,7 +639,9 @@ class Pipe:
                                     if soup.h1:
                                         return soup.h1.get_text().strip()
                         except Exception as e2:
-                            logger.warning(f"Both attempts failed for url {url}: {str(e2)}")
+                            logger.warning(
+                                f"Both attempts failed for url {url}: {str(e2)}"
+                            )
 
         except Exception as e:
             logger.warning(f"Failed to retrieve url: {url}")
@@ -604,17 +655,15 @@ class Pipe:
         citations_list = []
         for i, url in enumerate(citations, start=1):
             title = await self._get_url_title(url)
-            citation = {
-                "title": title,
-                "url": url,
-                "content": ""
-            }
+            citation = {"title": title, "url": url, "content": ""}
             citations_list.append(citation)
             logger.debug(f"Appended citation: {citation}")
 
         return citations_list
 
-    async def _process_citations(self, citations: set, emitter: EventEmitter, is_title_gen: bool = False):
+    async def _process_citations(
+        self, citations: set, emitter: EventEmitter, is_title_gen: bool = False
+    ):
         """
         Process and emit citations if any exist and we're not generating a title.
         """
@@ -623,7 +672,9 @@ class Pipe:
 
             citations_list = await self._build_citation_list(citations)
 
-            await emitter.emit_message(content=f"\n\n<details>\n<summary>Sources</summary>")
+            await emitter.emit_message(
+                content=f"\n\n<details>\n<summary>Sources</summary>"
+            )
             for i, citation in enumerate(citations_list, 1):
                 await emitter.emit_message(
                     content=f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
@@ -631,37 +682,63 @@ class Pipe:
             await emitter.emit_message(content=f"\n</details>\n")
             await emitter.emit_status(description="", done=True, status="complete")
 
-    def _convert_citations_to_superscript(self, match):
+    def _convert_citations_to_superscript(self, citation_or_match):
         """
         Convert a citation like [1] to its Unicode superscript equivalent
         """
         # Mapping of normal numbers to their superscript versions
         superscript_map = {
-            '0': '⁰',
-            '1': '¹',
-            '2': '²',
-            '3': '³',
-            '4': '⁴',
-            '5': '⁵',
-            '6': '⁶',
-            '7': '⁷',
-            '8': '⁸',
-            '9': '⁹',
-            '[': '⁽',
-            ']': '⁾'
+            "0": "⁰",
+            "1": "¹",
+            "2": "²",
+            "3": "³",
+            "4": "⁴",
+            "5": "⁵",
+            "6": "⁶",
+            "7": "⁷",
+            "8": "⁸",
+            "9": "⁹",
+            "[": "⁽",
+            "]": "⁾",
         }
-        
-        citation = match.group(0)  # Get the number from within the brackets
-        return ''.join(superscript_map.get(c, c) for c in citation)
+
+        citation = citation_or_match.group(0) if hasattr(citation_or_match, 'group') else citation_or_match
+        return "".join(superscript_map.get(c, c) for c in citation)
 
     async def _stream_response(self, payload, citations):
         """
         Handle streaming responses.
         """
-        response = await litellm.acompletion(
-            stream=True,
-            **payload
-        )
+        buffer = ""  # buffer for citation pattern matching
+        pattern = r"\[\d+\]"
+
+        async def process_chunk(content):
+            nonlocal buffer
+            buffer += content
+
+            # Find all complete citation patterns
+            matches = list(re.finditer(pattern, buffer))
+            if not matches:
+                result = buffer
+                buffer = ""
+                return result
+
+            # Process complete patterns and keep remainder
+            last_end = 0
+            result = ""
+            for match in matches:
+                # Add text before the pattern
+                result += buffer[last_end : match.start()]
+                # Add converted citation
+                result += self._convert_citations_to_superscript(match.group(0))
+                last_end = match.end()
+
+            # Keep unprocessed text in buffer
+            buffer = buffer[last_end:]
+            return result
+
+        response = await litellm.acompletion(stream=True, **payload)
+
         async for chunk in response:
             if "citations" in chunk:
                 if isinstance(chunk["citations"], list):
@@ -669,37 +746,49 @@ class Pipe:
                 elif isinstance(chunk["citations"], str):
                     citations.add(chunk["citations"])
 
-            if chunk.get("choices") and chunk["choices"][0].get("delta") and chunk["choices"][0]["delta"].get("content"):
+            if (
+                chunk.get("choices")
+                and chunk["choices"][0].get("delta")
+                and chunk["choices"][0]["delta"].get("content")
+            ):
                 content = chunk["choices"][0]["delta"]["content"]
 
-                modified_content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
+                # Process the chunk and update the content
+                processed_content = await process_chunk(content)
+                if processed_content:
+                    chunk["choices"][0]["delta"]["content"] = processed_content
+                    yield chunk
 
-                if modified_content != content:
-                    logger.debug(f"Converted citations in chunk: {content} -> {modified_content}")
-                    chunk["choices"][0]["delta"]["content"] = modified_content
-
-            yield chunk
+        # Yield any remaining buffered content
+        if buffer:
+            final_chunk = {"choices": [{"delta": {"content": buffer}}]}
+            yield final_chunk
 
     async def _get_response(self, payload, citations, is_title_gen: bool = False):
         """
         Handle non-streaming responses.
         """
-        response = await litellm.acompletion(
-            stream=False,
-            **payload
-        )
+        response = await litellm.acompletion(stream=False, **payload)
 
         content = response.choices[0].message.content
         logger.debug(f"Accumulated content: {content}")
 
         if not is_title_gen:
-            if hasattr(response, 'citations') and response.citations and len(response.citations) > 0:
-                content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
+            if (
+                hasattr(response, "citations")
+                and response.citations
+                and len(response.citations) > 0
+            ):
+                content = re.sub(
+                    r"\[\d+\]", self._convert_citations_to_superscript, content
+                )
 
                 citations_list = await self._build_citation_list(response.citations)
                 content += "\n\n<details>\n<summary>Sources</summary>\n"
                 for i, citation in enumerate(citations_list, 1):
-                    content += f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+                    content += (
+                        f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+                    )
                 content += "\n</details>\n"
 
         return content
@@ -709,7 +798,7 @@ class Pipe:
         Get the list of models and return it to Open-WebUI.
         """
 
-        #Set the logging level according to the valve preference.
+        # Set the logging level according to the valve preference.
         global logger
         if self.valves.PIPE_DEBUG:
             logger.setLevel(logging.DEBUG)
@@ -729,7 +818,8 @@ class Pipe:
             litellm.json_logs = False
             litellm.suppress_debug_info = True
 
-        if (self.valves.LANGFUSE_PUBLIC_KEY
+        if (
+            self.valves.LANGFUSE_PUBLIC_KEY
             and self.valves.LANGFUSE_SECRET_KEY
             and self.valves.LANGFUSE_PUBLIC_KEY is not "pk-fake-key"
             and self.valves.LANGFUSE_SECRET_KEY is not "sk-fake-key"
@@ -739,18 +829,25 @@ class Pipe:
             litellm.success_callback = ["langfuse"]
             litellm.failure_callback = ["langfuse"]
 
-        if (self.valves.GOOGLE_APPLICATION_CREDENTIALS
-            and self.valves.GOOGLE_APPLICATION_CREDENTIALS is not "path/to/gcp_config.json"
+        if (
+            self.valves.GOOGLE_APPLICATION_CREDENTIALS
+            and self.valves.GOOGLE_APPLICATION_CREDENTIALS
+            is not "path/to/gcp_config.json"
         ):
-            logger.debug(f"Google application credentials were set to path: {self.valves.GOOGLE_APPLICATION_CREDENTIALS}")
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self.valves.GOOGLE_APPLICATION_CREDENTIALS
+            logger.debug(
+                f"Google application credentials were set to path: {self.valves.GOOGLE_APPLICATION_CREDENTIALS}"
+            )
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = (
+                self.valves.GOOGLE_APPLICATION_CREDENTIALS
+            )
 
         logger.debug("pipes() called - fetching model list")
         self._model_list = self._get_model_list()
 
         model_list = [
             # use model['model_name'] instead of model['id'] for 'id' here because that's easier to match on
-            {"id": model["litellm_params"]["model"], "name": model["model_name"]} for model in self._model_list
+            {"id": model["litellm_params"]["model"], "name": model["model_name"]}
+            for model in self._model_list
         ]
 
         return model_list
@@ -776,7 +873,9 @@ class Pipe:
             emitter = EventEmitter(__event_emitter__)
 
             metadata = await self._build_metadata(__user__, __metadata__, user_valves)
-            payload = await self._build_completion_payload(body, __user__, metadata, user_valves, emitter)
+            payload = await self._build_completion_payload(
+                body, __user__, metadata, user_valves, emitter
+            )
 
             # Remove binary data from the logs to keep things clean
             log_payload = deepcopy(payload)
@@ -784,7 +883,10 @@ class Pipe:
                 for message in log_payload["messages"]:
                     if isinstance(message.get("content"), list):
                         for content in message["content"]:
-                            if content.get("type") == "image_url" and "url" in content["image_url"]:
+                            if (
+                                content.get("type") == "image_url"
+                                and "url" in content["image_url"]
+                            ):
                                 if content["image_url"]["url"].startswith("data:image"):
                                     content["image_url"]["url"] = "[BASE64_IMAGE_DATA]"
             logger.debug(f"Final payload: {json.dumps(log_payload, indent=2)}")
