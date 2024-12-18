@@ -198,8 +198,43 @@ class Pipe:
 
     def __init__(self):
         self.type = "manifold"
-        self.valves = self.Valves()
-        self.user_valves = self.UserValves()
+        self.valves = self.Valves(
+            **{
+                "LITELLM_BASE_URL": os.getenv("LITELLM_BASE_URL", ""),
+                "LITELLM_API_KEY": os.getenv("LITELLM_API_KEY", ""),
+                "LITELLM_MODEL_JSON_PATH": os.getenv("LITELLM_MODEL_JSON_PATH", ""),
+                "LITELLM_DEBUG": os.getenv("LITELLM_DEBUG", False),
+                "PIPE_DEBUG": os.getenv("PIPE_DEBUG", False),
+                "LANGFUSE_PUBLIC_KEY": os.getenv("LANGFUSE_PUBLIC_KEY", ""),
+                "LANGFUSE_SECRET_KEY": os.getenv("LANGFUSE_SECRET_KEY", ""),
+                "LANGFUSE_HOST": os.getenv("LANGFUSE_HOST", ""),
+                "EXTRA_METADATA": os.getenv("EXTRA_METADATA", ""),
+                "EXTRA_TAGS": os.getenv("EXTRA_TAGS", ""),
+                "REQUEST_TIMEOUT": os.getenv("REQUEST_TIMEOUT", 5),
+                "YOUTUBE_COOKIES_FILEPATH": os.getenv("YOUTUBE_COOKIES_FILEPATH", ""),
+                "VISION_ROUTER_ENABLED": os.getenv("VISION_ROUTER_ENABLED", False),
+                "VISION_MODEL_ID": os.getenv("VISION_MODEL_ID", ""),
+                "SKIP_REROUTE_MODELS": os.getenv("SKIP_REROUTE_MODELS", []),
+                "PERPLEXITY_RETURN_CITATIONS": os.getenv(
+                    "PERPLEXITY_RETURN_CITATIONS", True
+                ),
+                "PERPLEXITY_RETURN_IMAGES": os.getenv(
+                    "PERPLEXITY_RETURN_IMAGES", False
+                ),
+                "PERPLEXITY_RETURN_RELATED_QUESTIONS": os.getenv(
+                    "PERPLEXITY_RETURN_RELATED_QUESTIONS", False
+                ),
+                "GOOGLE_APPLICATION_CREDENTIALS": os.getenv(
+                    "GOOGLE_APPLICATION_CREDENTIALS", ""
+                ),
+            }
+        )
+        self.user_valves = self.UserValves(
+            **{
+                "EXTRA_METADATA": os.getenv("EXTRA_METADATA", ""),
+                "EXTRA_TAGS": os.getenv("EXTRA_TAGS", ""),
+            }
+        )
         self._model_list = None
 
     def _parse_model_string(self, model_id):
@@ -702,7 +737,11 @@ class Pipe:
             "]": "⁾",
         }
 
-        citation = citation_or_match.group(0) if hasattr(citation_or_match, 'group') else citation_or_match
+        citation = (
+            citation_or_match.group(0)
+            if hasattr(citation_or_match, "group")
+            else citation_or_match
+        )
         return "".join(superscript_map.get(c, c) for c in citation)
 
     async def _stream_response(self, payload, citations):
@@ -818,6 +857,9 @@ class Pipe:
             litellm.json_logs = False
             litellm.suppress_debug_info = True
 
+        logger.debug(f"Valves:\n{pformat(self.valves)}")
+        logger.debug(f"User Valves:\n{pformat(self.user_valves)}")
+
         if (
             self.valves.LANGFUSE_PUBLIC_KEY
             and self.valves.LANGFUSE_SECRET_KEY
@@ -889,7 +931,7 @@ class Pipe:
                             ):
                                 if content["image_url"]["url"].startswith("data:image"):
                                     content["image_url"]["url"] = "[BASE64_IMAGE_DATA]"
-            logger.debug(f"Final payload: {json.dumps(log_payload, indent=2)}")
+            logger.debug(f"Final payload:\n{json.dumps(log_payload, indent=2)}")
 
             try:
                 is_title_gen = __metadata__.get("task") == "title_generation"
