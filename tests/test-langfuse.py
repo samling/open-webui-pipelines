@@ -3,9 +3,9 @@ from langfuse import Langfuse
 
 def test_langfuse_trace():
     langfuse = Langfuse(
-        secret_key="sk-lf-735a4295-7279-4e15-91bc-55e4beae235a",
-        public_key="pk-lf-6ec74791-6eea-46b0-9520-95b1bcadbfcb",
-        host="https://litellm.sboynton.io",
+        secret_key="sk-fake-key",
+        public_key="pk-fake-key",
+        host="http://litellm.litellm:4000",
         debug=True,
     )
     test_body = {
@@ -17,7 +17,7 @@ def test_langfuse_trace():
     }
 
     test_user = {
-        "email": "samlingx@gmail.com",
+        "email": "my@email.com",
         "name": "Sam",
         "id": "sam-123"
     }
