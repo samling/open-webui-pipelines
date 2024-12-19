@@ -120,7 +120,7 @@ class EventEmitter:
 class Pipe:
     class Valves(BaseModel):
         NAME_PREFIX: str = Field(
-            default="Perplexity/",
+            default="Perplexity.",
             description="The prefix applied before the model names.",
         )
         PERPLEXITY_API_BASE_URL: str = Field(
