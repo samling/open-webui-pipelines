@@ -889,7 +889,7 @@ class Pipe:
                     citations = set(response.citations)
                     logger.debug(f"Extracted citations: {citations}")
 
-                vertex_metadata = list
+                vertex_metadata = None
                 if hasattr(response, "model_dump"):
                     response_data = response.model_dump()
                     if "vertex_ai_grounding_metadata" in response_data:
