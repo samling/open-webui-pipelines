@@ -2,6 +2,25 @@
 
 Install these pipes by navigating to Admin Settings > Functions, creating a new function, and pasting the contents of the file.
 
+## Provider Progress
+
+| name        | openai-compatible | manifold progress |
+| ---         | ---               | ---   |
+| anthropic   | no                |  |
+| aws bedrock | no                |  |
+| codestral   | no                |  |
+| cohere      | no                |  |
+| deepinfra   | yes               |  |
+| deepseek    | yes               |  |
+| gemini      | no                |  |
+| litellm     | yes               | :white_check_mark: |
+| mistral     | no                |  |
+| ollama      | yes(?)            |  |
+| perplexity  | kinda             | :white_check_mark: |
+| togetherai  | yes               |  |
+| vertex      | no                |  |
+| voyage      | no                |  |
+
 ## Pipes
 
 ### litellm.py
