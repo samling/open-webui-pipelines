@@ -28,6 +28,7 @@ Every pipe should have, at a minimum, the following features:
 - Stream responses
 - Get non-streaming responses
 - Scrub previous messages of blob data
+- Truncate messages to max input tokens
 - Process and emit citations if available
 - Debug logging
 - Extra metadata
