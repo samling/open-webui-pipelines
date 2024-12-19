@@ -808,70 +808,77 @@ class Pipe:
 
         return result, buffer
 
-    async def _stream_response(self, payload: dict, is_title_gen: bool):
+    async def _stream_response(self, response, citations: list = None, is_title_gen: bool = False):
         """
         Handle streaming responses.
         """
+        # Debug the CustomStreamWrapper object
+
         buffer = ""  # buffer for citation pattern matching
-        metadata = {
-            "citations": set(),
-            "vertex_metadata": None
-        }
+        pattern = r"\[\d+\]"
 
-        try:
-            response = await litellm.acompletion(stream=True, **payload)
+        async def process_chunk(content):
+            nonlocal buffer
+            buffer += content
 
-            async for chunk in response:
-                # Handle citations
-                if not is_title_gen and "citations" in chunk:
-                    if isinstance(chunk["citations"], list):
-                        metadata["citations"].update(chunk["citations"])
-                    elif isinstance(chunk["citations"], str):
-                        metadata["citations"].add(chunk["citations"])
+            # Find all complete citation patterns
+            matches = list(re.finditer(pattern, buffer))
+            if not matches:
+                result = buffer
+                buffer = ""
+                return result
 
-                # Process content
-                if (
-                    chunk.get("choices")
-                    and chunk["choices"][0].get("delta")
-                    and chunk["choices"][0]["delta"].get("content")
-                ):
-                    content = chunk["choices"][0]["delta"]["content"]
-                    processed_content, buffer = await self._process_response_chunk(
-                        content,
-                        buffer,
-                        is_title_gen
-                    )
+            # Process complete patterns and keep remainder
+            last_end = 0
+            result = ""
+            for match in matches:
+                # Add text before the pattern
+                result += buffer[last_end : match.start()]
+                # Add converted citation
+                result += self._convert_citations_to_superscript(match.group(0))
+                last_end = match.end()
 
-                    if processed_content:
-                        chunk["choices"][0]["delta"]["content"] = processed_content
-                        yield chunk, None # no metadata during streaming
+            # Keep unprocessed text in buffer
+            buffer = buffer[last_end:]
+            return result
 
-            # Handle any remaining buffered content
-            if buffer:
-                final_chunk = {"choices": [{"delta": {"content": buffer}}]}
-                yield final_chunk, None
+        async for chunk in response:
+            if "citations" in chunk:
+                if isinstance(chunk["citations"], list):
+                    citations.update(chunk["citations"])
+                elif isinstance(chunk["citations"], str):
+                    citations.add(chunk["citations"])
 
-            # Get final metadata after stream completes
-            if not is_title_gen and hasattr(response, "model_dump"):
-                response_data = response.model_dump()
-                if "vertex_ai_grounding_metadata" in response_data:
-                    metadata["vertex_metadata"] = (
-                        response_data["vertex_ai_grounding_metadata"][0].get("groundingChunks", [])
-                    )
+            if (
+                chunk.get("choices")
+                and chunk["choices"][0].get("delta")
+                and chunk["choices"][0]["delta"].get("content")
+            ):
+                content = chunk["choices"][0]["delta"]["content"]
 
-            yield None, metadata
+                # Process the chunk and update the content
+                processed_content = await process_chunk(content)
+                if processed_content:
+                    if chunk.get("choices")[0].get("finish_reason"):
+                        logger.debug("Last chunk detected, checking complete response")
+                        if hasattr(response, "response_uptil_now"):
+                            logger.debug(f"Complete response: {pformat(response.response_uptil_now)}")
+                            if hasattr(response.response_uptil_now, "model_dump"):
+                                response_data = response.response_uptil_now.model_dump()
+                                logger.debug(f"Response data: {pformat(response_data)}")
+                    chunk["choices"][0]["delta"]["content"] = processed_content
+                    yield chunk
 
-        except Exception as e:
-            logger.error(f"Error in stream response: {e}")
-            raise
+        # Yield any remaining buffered content
+        if buffer:
+            final_chunk = {"choices": [{"delta": {"content": buffer}}]}
+            yield final_chunk
 
-    async def _get_response(self, payload: dict, is_title_gen: bool):
+    async def _get_response(self, response, is_title_gen: bool):
         """
         Handle non-streaming responses.
         """
         try:
-            response = await litellm.acompletion(stream=False, **payload)
-        
             content = response.choices[0].message.content
             logger.debug(f"Response content: {content}")
 
@@ -981,6 +988,7 @@ class Pipe:
             user_valves = __user__.get("valves", self.UserValves())
             emitter = EventEmitter(__event_emitter__)
             is_title_gen = __metadata__.get("task") == "title_generation"
+            citations = set()
 
             # Build request metadata and payload
             metadata = await self._build_metadata(__user__, __metadata__, user_valves)
@@ -1002,17 +1010,22 @@ class Pipe:
                                     content["image_url"]["url"] = "[BASE64_IMAGE_DATA]"
             logger.debug(f"Final payload:\n{json.dumps(log_payload, indent=2)}")
 
+            response = await litellm.acompletion(
+                stream=body["stream"],
+                **payload
+            )
+
+            if hasattr(response, "model_dump"):
+                response_data = response.model_dump()
+
             if body["stream"]:
                 # Handle streaming responses
-                metadata = None
-                async for chunk, chunk_metadata in self._stream_response(payload, is_title_gen):
+                async for chunk in self._stream_response(response, citations, is_title_gen):
                     if chunk is not None:
                         yield chunk
-                    if chunk_metadata is not None:
-                        metadata = chunk_metadata
             else:
                 # Handle non-streaming responses
-                content = await self._get_response(payload, is_title_gen)
+                content = await self._get_response(response, is_title_gen)
                 yield content
 
             await emitter.emit_status(
