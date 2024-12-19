@@ -176,13 +176,15 @@ class Pipe:
             
             logger.debug(f"Conversation history:\n{pformat(debug_list)}")
 
-        def create_text_only_parts(message) -> List[Part]:
+        def create_text_only_parts(message, include_placeholders=True) -> List[Part]:
             """Extract only text content from a message"""
             if isinstance(message.get("content"), list):
                 text_parts = []
                 for content in message["content"]:
                     if content["type"] == "text":
                         text_parts.append(Part.from_text(content["text"]))
+                    elif content["type"] == "image_url" and include_placeholders:
+                        parts.append(Part.from_text("[binary_data]"))
                 return text_parts if text_parts else [Part.from_text("")]
             else:
                 return [Part.from_text(message["content"])]
@@ -213,7 +215,7 @@ class Pipe:
                 else:
                     parts = [Part.from_text(message["content"])]
             else:
-                parts = create_text_only_parts(message)
+                parts = create_text_only_parts(message, include_placeholders=True)
 
             role = "user" if message["role"] == "user" else "model"
             content = Content(role=role, parts=parts)
@@ -340,13 +342,41 @@ class Pipe:
 
         return payload
 
-    def stream_response(self, response):
-        for chunk in response:
-            if chunk.text:
-                yield chunk.text
+    def _process_citations(self, response, citations):
+        if hasattr(response, 'candidates') and response.candidates:
+            logger.debug(f"Found response candidates")
+            if hasattr(response.candidates[0], 'grounding_metadata') and response.candidates[0].grounding_metadata:
+                logger.debug(f"Found grounding metadata")
+                metadata = response.candidates[0].grounding_metadata
+                if hasattr(metadata, 'grounding_chunks') and metadata.grounding_chunks is not None:
+                    logger.debug(f"Processing grounding chunks")
+                    for grounding_chunk in metadata.grounding_chunks:
+                        if hasattr(grounding_chunk, "web"):
+                            citation = {
+                                "title": grounding_chunk.web.title,
+                                "uri": grounding_chunk.web.uri,
+                            }
+                            citations.append(citation)
 
-    def get_response(self, response):
-        return response.text
+    async def stream_response(self, response, citations):
+        try:
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+                self._process_citations(chunk, citations)
+
+        except Exception as e:
+            logger.error(f"Error in stream_response: {str(e)}")
+            yield f"Error processing response: {str(e)}"
+
+
+    async def get_response(self, response, citations):
+        try:
+            self._process_citations(response, citations)
+            return response.text if hasattr(response, 'text') else str(response)
+        except Exception as e:
+            logger.error(f"Error in get_response: {str(e)}")
+            return f"Error processing response: {str(e)}"
 
     def pipes(self):
         global logger
@@ -376,7 +406,7 @@ class Pipe:
             }
         ]
 
-    def pipe(
+    async def pipe(
         self,
         body: dict,
         __user__: dict,
@@ -390,21 +420,34 @@ class Pipe:
             emitter = EventEmitter(__event_emitter__)
 
             payload = self._build_completion_payload(body, __user__, __metadata__, user_valves, emitter)
-            
+
             if not self.valves.GOOGLE_API_KEY:
                 raise Exception("GOOGLE_API_KEY not provided in valves.")
+
+            citations = []
 
             if body["stream"]:
                 response = self.client.models.generate_content_stream(
                     **payload
                 )
-                return self.stream_response(response)
+
+                async for text in self.stream_response(response, citations):
+                    yield text
             else:
                 response = self.client.models.generate_content(
                     **payload
                 )
-                return self.get_response(response)
+                text = await self.get_response(response, citations)
+                yield text
+
+            if citations and len(citations) > 0:
+                logger.debug(f"Appending citations: {pformat(citations)}")
+                content = f"\n\n<details>\n<summary>Sources</summary>"
+                for i, citation in enumerate(citations, 1):
+                    content += f"\n[{i}] [{citation.get('title')}]({citation.get('uri')})"
+                content += f"\n</details>\n"
+                yield content
 
         except Exception as e:
             logger.debug(f"Error generating content: {e}")
-            return f"An error occurred: {str(e)}"
+            yield f"An error occurred: {str(e)}"
