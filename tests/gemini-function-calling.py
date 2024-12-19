@@ -2,7 +2,7 @@ from google import genai
 from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
 import sys
 import os
-sys.path.insert(0, os.path.abspath("./litellm"))
+# sys.path.insert(0, os.path.abspath("./litellm"))
 import litellm
 import requests
 from requests.models import PreparedRequest
