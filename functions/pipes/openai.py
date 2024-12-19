@@ -119,11 +119,11 @@ class EventEmitter:
 class Pipe:
     class Valves(BaseModel):
         NAME_PREFIX: str = Field(
-            default="Perplexity/",
+            default="OpenAI.",
             description="The prefix applied before the model names.",
         )
         BASE_URL: str = Field(
-            default="https://api.perplexity.ai",
+            default="https://api.openai.com",
             description="The base URL for OpenAI-compatible API endpoint.",
         )
         API_KEY: str = Field(
@@ -134,20 +134,12 @@ class Pipe:
             default=False, description="(Optional) Enable debugging for the pipe."
         )
         EXTRA_METADATA: str = Field(
-            default="{}", description='(Optional) Additional metadata, e.g. {"key": "value"}'
-        )
-        EXTRA_TAGS: str = Field(
-            default='["open-webui"]',
-            description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
+            default="", description='(Optional) Additional metadata, e.g. {"key": "value"}'
         )
 
     class UserValves(BaseModel):
         EXTRA_METADATA: str = Field(
-            default="{}", description='(Optional) Additional metadata, e.g. {"key": "value"}'
-        )
-        EXTRA_TAGS: str = Field(
-            default='["open-webui"]',
-            description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
+            default="", description='(Optional) Additional metadata, e.g. {"key": "value"}'
         )
 
     def __init__(self):
@@ -186,11 +178,7 @@ class Pipe:
         Construct additional metadata to add to the request.
         This includes trace data to be sent to an observation platform like Langfuse.
         """
-        metadata = {
-            "tags": set(),
-            "trace_user_id": __user__.get("name"),
-            "session_id": __metadata__.get("chat_id"),
-        }
+        metadata = {}
 
         extra_metadata = load_json(self.valves.EXTRA_METADATA)
         __metadata__.update(extra_metadata)
@@ -199,15 +187,6 @@ class Pipe:
         logger.debug(f"User metadata: {user_valves.EXTRA_METADATA}")
         extra_user_metadata = load_json(user_valves.EXTRA_METADATA)
         __metadata__.update(extra_user_metadata)
-
-        logger.debug(f"User tags: {user_valves.EXTRA_TAGS}")
-        extra_tags = load_json(self.valves.EXTRA_TAGS, as_list=True)
-        metadata["tags"].update(extra_tags)
-
-        extra_user_tags = load_json(user_valves.EXTRA_TAGS, as_list=True)
-        metadata["tags"].update(extra_user_tags)
-
-        metadata["tags"] = list(metadata["tags"])
 
         return metadata
 
@@ -238,27 +217,6 @@ class Pipe:
         if system_message is not None:
             logger.debug(f"Using non-default system prompt: {system_message['content']}")
             system_prompt = system_message["content"]
-
-        # Check for images in the last user message by inspecting the messages directly
-        has_images = False
-        for message in reversed(messages):
-            if message["role"] == "user":
-                if isinstance(message.get("content"), list):
-                    has_images = any(
-                        item.get("type") == "image_url" for item in message["content"]
-                    )
-                break
-
-        # Set the model to the vision model if it's defined and there's an image in the most recent user message
-        if has_images:
-            logger.debug(f"Found image in last user message; attempting to reroute request to vision model")
-            if self.valves.VISION_MODEL_ID and self.valves.VISION_MODEL_ID is not "fake-reroute-model":
-                # If we're not already using the rerouted models and we're not using a model that we want to skip rerouting in, reroute it
-                if model_name != self.valves.VISION_MODEL_ID and model_name not in self.valves.SKIP_REROUTE_MODELS:
-                    model_name = self.valves.VISION_MODEL_ID
-                    await emitter.emit_status(description=f"Request routed to {self.valves.VISION_MODEL_ID}", done=True)
-                else:
-                    logger.debug(f"Model is the same as target vision model or is in SKIP_REROUTE_MODELS")
 
         # Clean base64-encoded images from previous messages
         logger.debug(f"Stripping encoded image data from past messages")
@@ -326,56 +284,42 @@ class Pipe:
         """
         Handle streaming responses.
         """
-        stream = await client.chat.completions.create(
-            **payload
-        )
-        async for chunk in stream:
-            if not chunk or not chunk.choices:
-                continue
+        try:
+            stream = await client.chat.completions.create(
+                **payload
+            )
+            async for chunk in stream:
+                if chunk and chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if delta.content is not None:
+                        chunk_dict = {
+                            "choices": [{
+                                "delta": {
+                                    "content": delta.content
+                                }
+                            }]
+                        }
+                        yield chunk_dict
+        except Exception as e:
+            logger.error(f"Error details: {str(e)}")
 
-            try:
-                if chunk.get("choices") and chunk["choices"][0].get("delta") and chunk["choices"][0]["delta"].get("content"):
-                    content = chunk["choices"][0]["delta"]["content"]
-
-                    chunk_dict = {
-                        "choices": [{
-                            "delta": {
-                                "content": content
-                            }
-                        }]
-                    }
-                    yield chunk_dict
-
-            except Exception as e:
-                logger.error(f"Error details: {str(e)}")
-                continue
-
-
-    async def _get_response(self, headers, payload,  is_title_gen: bool = False):
+    async def _get_response(self, client: AsyncOpenAI, payload, is_title_gen: bool = False):
         """
         Handle non-streaming responses.
         """
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url=f"{self.valves.BASE_URL}/chat/completions",
-                headers=headers,
-                json=payload
-            ) as response:
-                try:
-                    response_json = await response.json()
-                    logger.debug(f"response_json: {pformat(response_json)}")
-                    if "choices" in response_json and len(response_json["choices"]) > 0:
-                        content = response_json["choices"][0]["message"]["content"]
-                        logger.debug(f"Accumulated content: {content}")
-                    else:
-                        logger.error(f"Unexpected response format: {response_json}")
-                        return "Error: Unexpected response format from API"
+        try:
+            response = await client.chat.completions.create(**payload)
+            if response.choices and len(response.choices) > 0:
+                content = response.choices[0].message.content
+                logger.debug(f"Accumulated content: {content}")
+                return content
+            else:
+                logger.error(f"Unexpected response format: {response}")
+                return "Error: Unexpected response format from API"
 
-                    return content
-
-                except Exception as e:
-                    logger.error(f"Error processing response: {str(e)}")
-                    return f"Error: {str(e)}"              
+        except Exception as e:
+            logger.error(f"Error processing response: {str(e)}")
+            return f"Error: {str(e)}"
 
     def pipes(self):
         global logger
@@ -390,6 +334,10 @@ class Pipe:
             {
                 "id": "gpt-4o-2024-11-20",
                 "name": f"{self.valves.NAME_PREFIX}gpt-4o-2024-11-20",
+            },
+            {
+                "id": "gpt-4o-mini",
+                "name": f"{self.valves.NAME_PREFIX}gpt-4o-mini",
             },
         ]
 
