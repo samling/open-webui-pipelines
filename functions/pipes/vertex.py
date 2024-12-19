@@ -2,7 +2,7 @@
 title: Google GenAI (Vertex AI) Manifold Pipeline
 author: Sam B
 date: 2024-12-18
-version: 1.0
+version: 0.1.0
 license: MIT
 description: A pipeline for generating text using Google's GenAI models in Open-WebUI.
 requirements: google
