@@ -5,7 +5,7 @@ date: 2024-05-30
 version: 1.0.1
 license: MIT
 description: A manifold pipe that uses LiteLLM.
-requirements: beautifulsoup4, yt_dlp, litellm>=1.55.4, google-cloud-aiplatform 
+requirements: beautifulsoup4, yt_dlp, litellm, google-cloud-aiplatform 
 """
 
 from bs4 import BeautifulSoup
@@ -16,7 +16,6 @@ from pprint import pformat
 from pydantic import BaseModel, Field
 from typing import Dict, List, AsyncGenerator, Union, Callable, Any, Awaitable
 import aiohttp
-import asyncio
 import json
 import litellm
 import logging
@@ -196,15 +195,46 @@ class Pipe:
             default="",
             description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
         )
-        ENABLE_GEMINI_GROUNDING: bool = Field(
-            default=False,
-            description="(Optional) Enable Google search grounding for Gemini models."
-        )
 
     def __init__(self):
         self.type = "manifold"
-        self.valves = self.Valves()
-        self.user_valves = self.UserValves()
+        self.valves = self.Valves(
+            **{
+                "LITELLM_BASE_URL": os.getenv("LITELLM_BASE_URL", ""),
+                "LITELLM_API_KEY": os.getenv("LITELLM_API_KEY", ""),
+                "LITELLM_MODEL_JSON_PATH": os.getenv("LITELLM_MODEL_JSON_PATH", ""),
+                "LITELLM_DEBUG": os.getenv("LITELLM_DEBUG", False),
+                "PIPE_DEBUG": os.getenv("PIPE_DEBUG", False),
+                "LANGFUSE_PUBLIC_KEY": os.getenv("LANGFUSE_PUBLIC_KEY", ""),
+                "LANGFUSE_SECRET_KEY": os.getenv("LANGFUSE_SECRET_KEY", ""),
+                "LANGFUSE_HOST": os.getenv("LANGFUSE_HOST", ""),
+                "EXTRA_METADATA": os.getenv("EXTRA_METADATA", ""),
+                "EXTRA_TAGS": os.getenv("EXTRA_TAGS", ""),
+                "REQUEST_TIMEOUT": os.getenv("REQUEST_TIMEOUT", 5),
+                "YOUTUBE_COOKIES_FILEPATH": os.getenv("YOUTUBE_COOKIES_FILEPATH", ""),
+                "VISION_ROUTER_ENABLED": os.getenv("VISION_ROUTER_ENABLED", False),
+                "VISION_MODEL_ID": os.getenv("VISION_MODEL_ID", ""),
+                "SKIP_REROUTE_MODELS": os.getenv("SKIP_REROUTE_MODELS", []),
+                "PERPLEXITY_RETURN_CITATIONS": os.getenv(
+                    "PERPLEXITY_RETURN_CITATIONS", True
+                ),
+                "PERPLEXITY_RETURN_IMAGES": os.getenv(
+                    "PERPLEXITY_RETURN_IMAGES", False
+                ),
+                "PERPLEXITY_RETURN_RELATED_QUESTIONS": os.getenv(
+                    "PERPLEXITY_RETURN_RELATED_QUESTIONS", False
+                ),
+                "GOOGLE_APPLICATION_CREDENTIALS": os.getenv(
+                    "GOOGLE_APPLICATION_CREDENTIALS", ""
+                ),
+            }
+        )
+        self.user_valves = self.UserValves(
+            **{
+                "EXTRA_METADATA": os.getenv("EXTRA_METADATA", ""),
+                "EXTRA_TAGS": os.getenv("EXTRA_TAGS", ""),
+            }
+        )
         self._model_list = None
 
     def _parse_model_string(self, model_id):
@@ -259,6 +289,7 @@ class Pipe:
             )
 
             # In Open-WebUI, model lists are just lists of json objects containing the downstream model id and a friendly name.
+            # TODO: We can take the model id...
             try:
                 # Initialize empty model list
                 model_list = []
@@ -412,7 +443,6 @@ class Pipe:
         # We have to go retrieve our properties from the original self._model_list by using the model_name from the body
         litellm_model_props = self._get_litellm_model_props_by_model_name(model_name)
         provider = litellm_model_props["model_info"]["litellm_provider"]
-        logger.debug(f"Provider name: {provider}")
 
         # Get the most recent user message
         messages = body.get("messages", [])
@@ -507,39 +537,15 @@ class Pipe:
         }
 
         # Provider-specific parameters
-        provider_params = dict({
-            "perplexity": {
-                "return_citations": self.valves.PERPLEXITY_RETURN_CITATIONS,
-                "return_images": self.valves.PERPLEXITY_RETURN_IMAGES,
-                "return_related_questions": self.valves.PERPLEXITY_RETURN_RELATED_QUESTIONS,
-            },
-            "vertex_ai-language-models": {}
-        })
-
-        logger.debug(f"Grounding enabled? {user_valves.ENABLE_GEMINI_GROUNDING}")
-        if user_valves.ENABLE_GEMINI_GROUNDING:
-            if (
-                provider.startswith("vertex_ai") and
-                (
-                    litellm_model_props["model_name"].startswith("gemini-2.0")
-                    or litellm_model_props["model_name"].startswith("gemini-exp")
-                )
-            ):
-                logger.debug(f"Grounding enabled with 'googleSearch' tool for {model_name}")
-                provider_params["vertex_ai-language-models"] = {
-                    "tools": [{"googleSearch": {}}],
-                    "generationConfig": {}
+        provider_params = dict(
+            {
+                "perplexity": {
+                    "return_citations": self.valves.PERPLEXITY_RETURN_CITATIONS,
+                    "return_images": self.valves.PERPLEXITY_RETURN_IMAGES,
+                    "return_related_questions": self.valves.PERPLEXITY_RETURN_RELATED_QUESTIONS,
                 }
-
-            elif provider.startswith("vertex_ai") and litellm_model_props["model_name"].startswith("gemini-"):
-                logger.debug(f"Grounding enabled with 'googleSearchRetrieval' tool for {model_name}")
-                provider_params["vertex_ai-language-models"] = {
-                    "tools": [{"googleSearchRetrieval": {}}],
-                    "generationConfig": {}
-                }
-
-            else:
-                logger.debug(f"{model_name} is incompatible with grounding.")
+            }
+        )
 
         # Final payload with base properties
         payload = {
@@ -677,74 +683,39 @@ class Pipe:
 
         return url
 
-    async def _build_citation_list(self, citations: set, vertex_metadata: list = None) -> list:
+    async def _build_citation_list(self, citations: set) -> str:
         """
         Take a list of citations and return it as a list.
         """
         citations_list = []
-
         for i, url in enumerate(citations, start=1):
             title = await self._get_url_title(url)
             citation = {"title": title, "url": url, "content": ""}
             citations_list.append(citation)
-            logger.debug(f"Appended regular citation: {citation}")
-
-        if vertex_metadata:
-            for chunk in vertex_metadata:
-                if "web" in chunk:
-                    web_data = chunk["web"]
-                    citation = {
-                        "title": web_data.get("title", "Unknown Source"),
-                        "url": web_data.get("uri", ""),
-                        "content": ""
-                    }
-                    citations_list.append(citation)
-                    logger.debug(f"Appended Vertex AI citation: {citation}")
+            logger.debug(f"Appended citation: {citation}")
 
         return citations_list
 
     async def _process_citations(
-        self, citations: set, emitter: EventEmitter, is_title_gen: bool = False, vertex_metadata: list = None
+        self, citations: set, emitter: EventEmitter, is_title_gen: bool = False
     ):
         """
         Process and emit citations if any exist and we're not generating a title.
         """
-        logger.debug(f"Processing citations with:\ncitations: {citations}\nvertex_metadata: {pformat(vertex_metadata)}\nis_title_gen: {is_title_gen}")
-        
-        if (citations or vertex_metadata) and not is_title_gen:
+        if citations and not is_title_gen:
             await emitter.emit_status(description=f"Formatting citations...")
-            
-            # Build and log citations list
-            citations_list = await self._build_citation_list(citations, vertex_metadata)
-            logger.debug(f"Built citations list:\n{pformat(citations_list)}")
-            
-            if citations_list:
-                # Format citations markdown
-                citations_md = f"\n\n<details>\n<summary>Sources</summary>"
-                for i, citation in enumerate(citations_list, 1):
-                    logger.debug(f"Adding citation {i}: {citation}")
-                    citations_md += f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
-                citations_md += f"\n</details>\n"
-                
-                logger.debug(f"Final citations markdown:\n{citations_md}")
-                
-                # Emit the formatted citations
-                try:
-                    await emitter.emit_message(content=citations_md)
-                    logger.debug("Successfully emitted citations message")
-                except Exception as e:
-                    logger.error(f"Error emitting citations message: {e}")
-                    
-                # Emit completion status
-                try:
-                    await emitter.emit_status(description="", done=True, status="complete")
-                    logger.debug("Successfully emitted completion status")
-                except Exception as e:
-                    logger.error(f"Error emitting completion status: {e}")
-            else:
-                logger.debug("No citations to emit after processing")
-        else:
-            logger.debug("Skipping citations processing due to conditions not met")
+
+            citations_list = await self._build_citation_list(citations)
+
+            await emitter.emit_message(
+                content=f"\n\n<details>\n<summary>Sources</summary>"
+            )
+            for i, citation in enumerate(citations_list, 1):
+                await emitter.emit_message(
+                    content=f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+                )
+            await emitter.emit_message(content=f"\n</details>\n")
+            await emitter.emit_status(description="", done=True, status="complete")
 
     def _convert_citations_to_superscript(self, citation_or_match):
         """
@@ -773,47 +744,10 @@ class Pipe:
         )
         return "".join(superscript_map.get(c, c) for c in citation)
 
-    async def _process_response_chunk(self, content: str, buffer: str, is_title_gen: bool):
-        """Process content chunk and maintain buffer for citation processing"""
-        buffer += content
-        
-        # Skip if we're generating a title
-        if is_title_gen:
-            result = buffer
-            buffer = ""
-            return result, buffer
-
-        pattern = r"\[\d+\]"
-
-        # Find the last possible start of a citation
-        last_open_bracket = buffer.rfind('[')
-
-        if last_open_bracket != -1:
-            next_close_bracket = buffer.find(']', last_open_bracket)
-
-            if next_close_bracket == -1:
-                # Incomplete citation found
-                process_until = last_open_bracket
-                buffer = buffer[last_open_bracket:]
-            else:
-                # Complete citation found
-                process_until = len(buffer)
-                buffer = ""
-        else:
-            process_until = len(buffer)
-            buffer = ""
-
-        chunk_to_process = buffer[:process_until]
-        result = re.sub(pattern, self._convert_citations_to_superscript, chunk_to_process)
-
-        return result, buffer
-
-    async def _stream_response(self, response, citations: list = None, is_title_gen: bool = False):
+    async def _stream_response(self, payload, citations):
         """
         Handle streaming responses.
         """
-        # Debug the CustomStreamWrapper object
-
         buffer = ""  # buffer for citation pattern matching
         pattern = r"\[\d+\]"
 
@@ -842,6 +776,8 @@ class Pipe:
             buffer = buffer[last_end:]
             return result
 
+        response = await litellm.acompletion(stream=True, **payload)
+
         async for chunk in response:
             if "citations" in chunk:
                 if isinstance(chunk["citations"], list):
@@ -859,13 +795,6 @@ class Pipe:
                 # Process the chunk and update the content
                 processed_content = await process_chunk(content)
                 if processed_content:
-                    if chunk.get("choices")[0].get("finish_reason"):
-                        logger.debug("Last chunk detected, checking complete response")
-                        if hasattr(response, "response_uptil_now"):
-                            logger.debug(f"Complete response: {pformat(response.response_uptil_now)}")
-                            if hasattr(response.response_uptil_now, "model_dump"):
-                                response_data = response.response_uptil_now.model_dump()
-                                logger.debug(f"Response data: {pformat(response_data)}")
                     chunk["choices"][0]["delta"]["content"] = processed_content
                     yield chunk
 
@@ -874,45 +803,34 @@ class Pipe:
             final_chunk = {"choices": [{"delta": {"content": buffer}}]}
             yield final_chunk
 
-    async def _get_response(self, response, is_title_gen: bool):
+    async def _get_response(self, payload, citations, is_title_gen: bool = False):
         """
         Handle non-streaming responses.
         """
-        try:
-            content = response.choices[0].message.content
-            logger.debug(f"Response content: {content}")
+        response = await litellm.acompletion(stream=False, **payload)
 
-            if not is_title_gen:
-                # Debug citation extraction
-                citations = set()
-                if hasattr(response, "citations"):
-                    citations = set(response.citations)
-                    logger.debug(f"Extracted citations: {citations}")
+        content = response.choices[0].message.content
+        logger.debug(f"Accumulated content: {content}")
 
-                vertex_metadata = None
-                if hasattr(response, "model_dump"):
-                    response_data = response.model_dump()
-                    if "vertex_ai_grounding_metadata" in response_data:
-                        vertex_metadata = response_data["vertex_ai_grounding_metadata"]
-                        if vertex_metadata and len(vertex_metadata) > 0:
-                            vertex_metadata = vertex_metadata[0].get("groundingChunks", [])
-                        logger.debug(f"vertex_metadata: {pformat(vertex_metadata)}")
+        if not is_title_gen:
+            if (
+                hasattr(response, "citations")
+                and response.citations
+                and len(response.citations) > 0
+            ):
+                content = re.sub(
+                    r"\[\d+\]", self._convert_citations_to_superscript, content
+                )
 
-                citations = await self._build_citation_list(citations, vertex_metadata)
+                citations_list = await self._build_citation_list(response.citations)
+                content += "\n\n<details>\n<summary>Sources</summary>\n"
+                for i, citation in enumerate(citations_list, 1):
+                    content += (
+                        f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+                    )
+                content += "\n</details>\n"
 
-                if len(citations) > 0:
-                    content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
-
-                    content += "\n\n<details>\n<summary>Sources</summary>\n"
-                    for i, citation in enumerate(citations, 1):
-                        content += f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
-                    content += "\n</details>\n"
-
-                return content
-
-        except Exception as e:
-            logger.error(f"Error in non-streaming response: {e}")
-            raise
+        return content
 
     def pipes(self):
         """
@@ -938,6 +856,9 @@ class Pipe:
             litellm.set_verbose = False
             litellm.json_logs = False
             litellm.suppress_debug_info = True
+
+        logger.debug(f"Valves:\n{pformat(self.valves)}")
+        logger.debug(f"User Valves:\n{pformat(self.user_valves)}")
 
         if (
             self.valves.LANGFUSE_PUBLIC_KEY
@@ -984,13 +905,15 @@ class Pipe:
         The main pipe through which requests flow.
         """
 
-        try:
-            user_valves = __user__.get("valves", self.UserValves())
-            emitter = EventEmitter(__event_emitter__)
-            is_title_gen = __metadata__.get("task") == "title_generation"
-            citations = set()
+        user_valves = __user__.get("valves")
+        if not user_valves:
+            user_valves = self.UserValves()
 
-            # Build request metadata and payload
+        citations = set()
+
+        try:
+            emitter = EventEmitter(__event_emitter__)
+
             metadata = await self._build_metadata(__user__, __metadata__, user_valves)
             payload = await self._build_completion_payload(
                 body, __user__, metadata, user_valves, emitter
@@ -1010,30 +933,26 @@ class Pipe:
                                     content["image_url"]["url"] = "[BASE64_IMAGE_DATA]"
             logger.debug(f"Final payload:\n{json.dumps(log_payload, indent=2)}")
 
-            response = await litellm.acompletion(
-                stream=body["stream"],
-                **payload
-            )
+            try:
+                is_title_gen = __metadata__.get("task") == "title_generation"
 
-            if hasattr(response, "model_dump"):
-                response_data = response.model_dump()
-
-            if body["stream"]:
-                # Handle streaming responses
-                async for chunk in self._stream_response(response, citations, is_title_gen):
-                    if chunk is not None:
+                if body["stream"]:
+                    async for chunk in self._stream_response(payload, citations):
                         yield chunk
-            else:
-                # Handle non-streaming responses
-                content = await self._get_response(response, is_title_gen)
-                yield content
+                    if citations:
+                        await self._process_citations(citations, emitter, is_title_gen)
+                else:
+                    content = await self._get_response(payload, citations, is_title_gen)
+                    yield content
 
-            await emitter.emit_status(
-                status="complete",
-                description="",
-                done=True,
-            )
+                await emitter.emit_status(
+                    status="complete",
+                    description="",
+                    done=True,
+                )
 
+            except aiohttp.ClientError as e:
+                logger.error(f"Error during request: {e}")
+                yield f"Error: {e}"
         except Exception as e:
             logger.exception(f"Unexpected error in pipe: {e}")
-            yield f"Error: {str(e)}"
