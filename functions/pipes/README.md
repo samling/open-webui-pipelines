@@ -1,25 +1,36 @@
 ## Installation
 
-Install these pipes by navigating to Admin Settings > Functions, creating a new function, and pasting the contents of the file.
+Install these pipes by navigating to Admin Settings > Functions, creating a new function, and pasting the contents of the file. Edit valves accordingly.
 
 ## Provider Progress
 
-| name        | openai-compatible | manifold progress |
-| ---         | ---               | ---   |
-| anthropic   | no                |  |
-| aws bedrock | no                |  |
-| codestral   | no                |  |
-| cohere      | no                |  |
-| deepinfra   | yes               |  |
-| deepseek    | yes               |  |
-| gemini      | no                |  |
-| litellm     | yes               | :white_check_mark: |
-| mistral     | no                |  |
-| ollama      | yes(?)            |  |
-| perplexity  | kinda             | :white_check_mark: |
-| togetherai  | yes               |  |
-| vertex      | no                |  |
-| voyage      | no                |  |
+| name        | openai-compatible | manifold progress   |
+| ---         | ---               | ---                 |
+| anthropic   | no                |                     |
+| aws bedrock | no                |                     |
+| codestral   | no                |                     |
+| cohere      | no                |                     |
+| deepinfra   | yes               |                     |
+| deepseek    | yes               |                     |
+| gemini      | no                | :white_check_mark:  |
+| litellm     | yes               | :white_check_mark:  |
+| mistral     | no                |                     |
+| ollama      | yes(?)            |                     |
+| perplexity  | kinda             | :white_check_mark:  |
+| togetherai  | yes               |                     |
+| vertex      | no                |                     |
+| voyage      | no                |                     |
+
+## Goals
+
+Every pipe should have, at a minimum, the following features:
+
+- Stream responses
+- Get non-streaming responses
+- Scrub previous messages of blob data
+- Process and emit citations if available
+- Debug logging
+- Extra metadata
 
 ## Pipes
 
