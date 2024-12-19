@@ -269,15 +269,16 @@ class Pipe:
         tools=[]
         if self.valves.ENABLE_GROUNDING or user_valves.ENABLE_GROUNDING:
             logger.debug(f"Grounding enabled.")
-            if model_name.startswith("gemini-2.0") or model_name.startswith("gemini-exp"):
+            if model_name.startswith("gemini-2.0"):
                 google_search_tool = Tool(
                     google_search = GoogleSearch()
                 )
-            else:
+                tools=[google_search_tool]
+            elif not model_name.startswith("gemini-exp"):
                 google_search_tool = Tool(
                     google_search_retrieval = GoogleSearchRetrieval()
                 )
-            tools=[google_search_tool]
+                tools=[google_search_tool]
 
         generation_config = {
             "temperature": body.get("temperature", 0.7),
