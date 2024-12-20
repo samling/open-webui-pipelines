@@ -25,7 +25,7 @@ from utils.misc import pop_system_message
 import aiohttp
 import json
 import logging
-import re
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -172,6 +172,39 @@ class Pipe:
         logger.debug(f"Model name: {model_name}")
 
         return manifold_name, model_name
+
+    def _get_openai_models(self):
+            if self.valves.API_KEY:
+                try:
+                    headers = {}
+                    headers["Authorization"] = f"Bearer {self.valves.API_KEY}"
+                    headers["Content-Type"] = "application/json"
+
+                    r = requests.get(
+                        f"{self.valves.BASE_URL}/models", headers=headers
+                    )
+
+                    models = r.json()
+                    return [
+                        {
+                            "id": model["id"],
+                            "name": f"{self.valves.NAME_PREFIX}{model['name']}" if 'name' in model else f"{self.valves.NAME_PREFIX}{model['id']}",
+                        }
+                        for model in models["data"]
+                        if ("gpt" in model["id"]) or ("o1" in model["id"])
+                    ]
+
+                except Exception as e:
+
+                    print(f"Error: {e}")
+                    return [
+                        {
+                            "id": "error",
+                            "name": "Could not fetch models from OpenAI, please update the API Key in the valves.",
+                        },
+                    ]
+            else:
+                return []
 
     async def _build_metadata(self, __user__, __metadata__, user_valves):
         """
@@ -330,16 +363,17 @@ class Pipe:
             logger.setLevel(logging.INFO)
             logger.info("Debug logging is disabled for the pipe")
 
-        return [
-            {
-                "id": "gpt-4o-2024-11-20",
-                "name": f"{self.valves.NAME_PREFIX}gpt-4o-2024-11-20",
-            },
-            {
-                "id": "gpt-4o-mini",
-                "name": f"{self.valves.NAME_PREFIX}gpt-4o-mini",
-            },
-        ]
+        return self._get_openai_models()
+        # return [
+        #     {
+        #         "id": "gpt-4o-2024-11-20",
+        #         "name": f"{self.valves.NAME_PREFIX}gpt-4o-2024-11-20",
+        #     },
+        #     {
+        #         "id": "gpt-4o-mini",
+        #         "name": f"{self.valves.NAME_PREFIX}gpt-4o-mini",
+        #     },
+        # ]
 
     async def pipe(
         self,
