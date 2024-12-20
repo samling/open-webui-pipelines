@@ -401,9 +401,17 @@ class Pipe:
                 "name": f"{self.valves.NAME_PREFIX}gemini-exp-1206"
             },
             {
-                "id": "gemini-1.5-pro",
-                "name": f"{self.valves.NAME_PREFIX}gemini-1.5-pro"
-            }
+                "id": "gemini-1.5-pro-latest",
+                "name": f"{self.valves.NAME_PREFIX}gemini-1.5-pro-latest"
+            },
+            {
+                "id": "gemini-1.5-pro-001",
+                "name": f"{self.valves.NAME_PREFIX}gemini-1.5-pro-001"
+            },
+            {
+                "id": "gemini-1.5-pro-002",
+                "name": f"{self.valves.NAME_PREFIX}gemini-1.5-pro-002"
+            },
         ]
 
     async def pipe(
