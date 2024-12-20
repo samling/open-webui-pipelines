@@ -31,32 +31,64 @@ class Pipe:
         self.MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB per image
         pass
 
-    def get_anthropic_models(self):
-        return [
-            {
-                "id": "claude-3-5-haiku-20241022",
-                "name": f"{self.valves.NAME_PREFIX}claude-3.5-haiku-20241022"
-            },
-            {
-                "id": "claude-3-5-haiku-latest",
-                "name": f"{self.valves.NAME_PREFIX}claude-3.5-haiku-latest"
-            },
-            {
-                "id": "claude-3-5-sonnet-20240620",
-                "name": f"{self.valves.NAME_PREFIX}claude-3.5-sonnet-20240620"
-            },
-            {
-                "id": "claude-3-5-sonnet-20241022",
-                "name": f"{self.valves.NAME_PREFIX}claude-3.5-sonnet-20241022"
-            },
-            {
-                "id": "claude-3-5-sonnet-latest",
-                "name": f"{self.valves.NAME_PREFIX}claude-3.5-sonnet-latest"
-            },
-        ]
+    # def _get_anthropic_models(self):
+    #     return [
+    #         {
+    #             "id": "claude-3-5-haiku-20241022",
+    #             "name": f"{self.valves.NAME_PREFIX}claude-3.5-haiku-20241022"
+    #         },
+    #         {
+    #             "id": "claude-3-5-haiku-latest",
+    #             "name": f"{self.valves.NAME_PREFIX}claude-3.5-haiku-latest"
+    #         },
+    #         {
+    #             "id": "claude-3-5-sonnet-20240620",
+    #             "name": f"{self.valves.NAME_PREFIX}claude-3.5-sonnet-20240620"
+    #         },
+    #         {
+    #             "id": "claude-3-5-sonnet-20241022",
+    #             "name": f"{self.valves.NAME_PREFIX}claude-3.5-sonnet-20241022"
+    #         },
+    #         {
+    #             "id": "claude-3-5-sonnet-latest",
+    #             "name": f"{self.valves.NAME_PREFIX}claude-3.5-sonnet-latest"
+    #         },
+    #     ]
+
+    def _get_anthropic_models(self):
+            if self.valves.ANTHROPIC_API_KEY:
+                try:
+                    headers = {}
+                    headers["x-api-key"] = f"{self.valves.ANTHROPIC_API_KEY}"
+                    headers["anthropic-version"] = "2023-06-01"
+
+                    r = requests.get(
+                        "https://api.anthropic.com/v1/models", headers=headers
+                    )
+
+                    models = r.json()
+                    return [
+                        {
+                            "id": model["id"],
+                            "name": f"{self.valves.NAME_PREFIX}{model['display_name']}" if 'display_name' in model else f"{self.valves.NAME_PREFIX}{model['id']}",
+                        }
+                        for model in models["data"]
+                    ]
+
+                except Exception as e:
+
+                    print(f"Error: {e}")
+                    return [
+                        {
+                            "id": "error",
+                            "name": "Could not fetch models from OpenAI, please update the API Key in the valves.",
+                        },
+                    ]
+            else:
+                return []
 
     def pipes(self) -> List[dict]:
-        return self.get_anthropic_models()
+        return self._get_anthropic_models()
 
     def process_image(self, image_data):
         """Process image data with size validation."""
