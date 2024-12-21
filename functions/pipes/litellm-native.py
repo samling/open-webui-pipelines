@@ -120,8 +120,15 @@ class Pipe:
         LITELLM_DEBUG: bool = Field(
             default=False, description="(Optional) Enable debugging for litellm."
         )
+        NAME_PREFIX: str = Field(
+            default="LiteLLM.",
+            description="(Optional) Prefix for model names in the UI.",
+        )
         PIPE_DEBUG: bool = Field(
             default=False, description="(Optional) Enable debugging for the pipe."
+        )
+        LANGFUSE_ENABLED: bool = Field(
+            default=False, description="(Optional) Enable Langfuse tracing."
         )
         LANGFUSE_PUBLIC_KEY: str = Field(
             default="pk-fake-key", description="(Optional) Langfuse public key."
@@ -176,14 +183,6 @@ class Pipe:
             default="path/to/gcp_config.json",
             description="(Optional) The path to the google applications JSON for VertexAI.",
         )
-        # VERTEXAI_PROJECT: str = Field(
-        #     default="fake-project-id",
-        #     description="(Optional) The name of the project in VertexAI."
-        # )
-        # VERTEXAI_LOCATION: str = Field(
-        #     default="us-west4",
-        #     description="(Optional) The location of the project in VertexAI."
-        # )
         pass
 
     class UserValves(BaseModel):
@@ -198,43 +197,8 @@ class Pipe:
 
     def __init__(self):
         self.type = "manifold"
-        self.valves = self.Valves(
-            **{
-                "LITELLM_BASE_URL": os.getenv("LITELLM_BASE_URL", ""),
-                "LITELLM_API_KEY": os.getenv("LITELLM_API_KEY", ""),
-                "LITELLM_MODEL_JSON_PATH": os.getenv("LITELLM_MODEL_JSON_PATH", ""),
-                "LITELLM_DEBUG": os.getenv("LITELLM_DEBUG", False),
-                "PIPE_DEBUG": os.getenv("PIPE_DEBUG", False),
-                "LANGFUSE_PUBLIC_KEY": os.getenv("LANGFUSE_PUBLIC_KEY", ""),
-                "LANGFUSE_SECRET_KEY": os.getenv("LANGFUSE_SECRET_KEY", ""),
-                "LANGFUSE_HOST": os.getenv("LANGFUSE_HOST", ""),
-                "EXTRA_METADATA": os.getenv("EXTRA_METADATA", ""),
-                "EXTRA_TAGS": os.getenv("EXTRA_TAGS", ""),
-                "REQUEST_TIMEOUT": os.getenv("REQUEST_TIMEOUT", 5),
-                "YOUTUBE_COOKIES_FILEPATH": os.getenv("YOUTUBE_COOKIES_FILEPATH", ""),
-                "VISION_ROUTER_ENABLED": os.getenv("VISION_ROUTER_ENABLED", False),
-                "VISION_MODEL_ID": os.getenv("VISION_MODEL_ID", ""),
-                "SKIP_REROUTE_MODELS": os.getenv("SKIP_REROUTE_MODELS", []),
-                "PERPLEXITY_RETURN_CITATIONS": os.getenv(
-                    "PERPLEXITY_RETURN_CITATIONS", True
-                ),
-                "PERPLEXITY_RETURN_IMAGES": os.getenv(
-                    "PERPLEXITY_RETURN_IMAGES", False
-                ),
-                "PERPLEXITY_RETURN_RELATED_QUESTIONS": os.getenv(
-                    "PERPLEXITY_RETURN_RELATED_QUESTIONS", False
-                ),
-                "GOOGLE_APPLICATION_CREDENTIALS": os.getenv(
-                    "GOOGLE_APPLICATION_CREDENTIALS", ""
-                ),
-            }
-        )
-        self.user_valves = self.UserValves(
-            **{
-                "EXTRA_METADATA": os.getenv("EXTRA_METADATA", ""),
-                "EXTRA_TAGS": os.getenv("EXTRA_TAGS", ""),
-            }
-        )
+        self.valves = self.Valves()
+        self.user_valves = self.UserValves()
         self._model_list = None
 
     def _parse_model_string(self, model_id):
@@ -861,7 +825,8 @@ class Pipe:
         logger.debug(f"User Valves:\n{pformat(self.user_valves)}")
 
         if (
-            self.valves.LANGFUSE_PUBLIC_KEY
+            self.valves.LANGFUSE_ENABLED
+            and self.valves.LANGFUSE_PUBLIC_KEY
             and self.valves.LANGFUSE_SECRET_KEY
             and self.valves.LANGFUSE_PUBLIC_KEY is not "pk-fake-key"
             and self.valves.LANGFUSE_SECRET_KEY is not "sk-fake-key"
@@ -888,7 +853,10 @@ class Pipe:
 
         model_list = [
             # use model['model_name'] instead of model['id'] for 'id' here because that's easier to match on
-            {"id": model["litellm_params"]["model"], "name": model["model_name"]}
+            {
+                "id": model["litellm_params"]["model"],
+                "name": f"{self.valves.NAME_PREFIX}{model['model_name']}",
+            }
             for model in self._model_list
         ]
 
