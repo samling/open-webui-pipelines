@@ -2,25 +2,6 @@
 
 Install these pipes by navigating to Admin Settings > Functions, creating a new function, and pasting the contents of the file. Edit valves accordingly.
 
-## Provider Progress
-
-| name        | openai-compatible | manifold progress   |
-| ---         | ---               | ---                 |
-| anthropic   | no                |                     |
-| aws bedrock | no                |                     |
-| codestral   | no                |                     |
-| cohere      | no                |                     |
-| deepinfra   | yes               |                     |
-| deepseek    | yes               |                     |
-| gemini      | no                | :white_check_mark:  |
-| litellm     | yes               | :white_check_mark:  |
-| mistral     | no                |                     |
-| ollama      | yes(?)            |                     |
-| perplexity  | kinda             | :white_check_mark:  |
-| togetherai  | yes               |                     |
-| vertex      | no                |                     |
-| voyage      | no                |                     |
-
 ## Goals
 
 Every pipe should have, at a minimum, the following features:
@@ -29,10 +10,30 @@ Every pipe should have, at a minimum, the following features:
 - Get non-streaming responses
 - System prompt support (if applicable)
 - Scrub previous messages of blob data
-- Truncate messages to max input tokens
-- Process and emit citations if available
+- Truncate messages to max input tokens (if possible; some APIs don't report token usage)
+- Process and emit citations (if applicable)
 - Debug logging
 - Extra metadata
+- Tool calling (if applicable)
+
+## Provider Progress
+
+| name        | openai-compatible | stream | get | system | scrub | truncate | citations | debug | metadata | tools |
+| ---         | ---              | ---    | ---  | ---    | ---   | ---      | ---       | ---   | ---      | ---   |
+| anthropic   | no               | x      | x    | x      |       |          |           | x     | ?        |       |
+| aws bedrock | no               |        |      |        |       |          |           |       |          |       |
+| codestral   | no               |        |      |        |       |          |           |       |          |       |
+| cohere      | no               | x      | x    | x      | x     |          |           | x     | ?        |       |
+| deepinfra   | yes              |        |      |        |       |          |           |       |          |       |
+| deepseek    | yes              |        |      |        |       |          |           |       |          |       |
+| litellm     | yes              | x      | x    | x      | x     | x        | x         | x     | x        | x     |
+| mistral     | no               |        |      |        |       |          |           |       |          |       |
+| ollama      | yes              |        |      |        |       |          |           |       |          |       |
+| openai      | yes              | x      | x    | x      | x     |          |           |       | x        |       |
+| perplexity  | yes              | x      | x    | x      | x     |          | x         | x     | x        |       |
+| togetherai  | yes              |        |      |        |       |          |           |       |          |       |
+| vertex      | no               | x      | x    | x      | x     |          | x         | x     | ?        | x     |
+| voyage      | no               |        |      |        |       |          |           |       |          |       |
 
 ## Pipes
 
