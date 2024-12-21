@@ -239,12 +239,8 @@ class Pipe:
         logger.debug(f"Model from open-webui request: {body['model']}")
         manfold_name, model_name = self._parse_model_string(body['model'])
 
-        # Get the most recent user message
+        # Get all messages
         messages = body.get("messages", [])
-        last_user_message_content = get_last_user_message(messages)
-        if last_user_message_content is None:
-            return body
-
         # Process system prompt if there is one
         system_message, messages = pop_system_message(messages)
         system_prompt = "You are a helpful assistant."
@@ -255,6 +251,7 @@ class Pipe:
         # Clean base64-encoded images from previous messages
         logger.debug(f"Stripping encoded image data from past messages")
         cleaned_messages = []
+        last_user_message_content = get_last_user_message(messages)
         for message in messages:
             cleaned_message = message.copy()
             if isinstance(message.get("content"), list):
@@ -276,7 +273,9 @@ class Pipe:
                         cleaned_content.append(content)
                     cleaned_message["content"] = cleaned_content
             cleaned_messages.append(cleaned_message)
+        logger.debug(f"Cleaned messages:\n\t{pformat(cleaned_messages)}")
 
+        # Get most recent user message and format it for Cohere
         # Trim messages to fit in model's max_tokens
         # logger.debug(f"Trimming message content to max_input_tokens value: {litellm_model_props['model_info']['max_input_tokens']}")
         # cleaned_messages = trim_messages(cleaned_messages, model_name)
@@ -303,10 +302,7 @@ class Pipe:
             if param in body:
                 payload[param] = body[param]
 
-        # Add user and metadata if they exist
-        if __user__.get("id"):
-            payload["user"] = __user__["id"]
-
+        # Add metadata if it exists
         if metadata:
             payload["metadata"] = metadata
 
@@ -314,43 +310,71 @@ class Pipe:
 
         return payload
 
-    async def _stream_response(self, client: cohere.ClientV2, payload):
+    async def _stream_response(self, payload):
         """
         Handle streaming responses.
         """
         try:
-            stream = await client.chat_stream(
-                **payload
-            )
-            async for chunk in stream:
-                if chunk and chunk.delta:
-                    delta = chunk.delta
-                    # TODO
-                    if delta.content is not None:
-                        chunk_dict = {
-                            "choices": [{
-                                "delta": {
-                                    "content": delta.content
-                                }
-                            }]
-                        }
-                        yield chunk_dict
-        except Exception as e:
-            logger.error(f"Error details: {str(e)}")
+            headers = {
+                "Authorization": f"Bearer {self.valves.API_KEY}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
 
-    async def _get_response(self, client: cohere.ClientV2, payload, is_title_gen: bool = False):
+            r = requests.post(
+                url=f"{self.valves.BASE_URL}/chat",
+                json=payload,
+                headers=headers,
+                stream=True,
+            )
+            r.raise_for_status()
+            logger.debug(r.text)
+
+            for line in r.iter_lines():
+                if line:
+                    try:
+                        event = json.loads(line.decode("utf-8"))
+                        if event["type"] == "content-start":
+                            logger.debug(f"Received start event: {event}")
+                        elif event["type"] == "content-delta":
+                            yield event["delta"]["message"]["content"]["text"]
+                        #elif event["type"] == "content-end": # TODO: Do we need this vs. message-end?
+                        elif event["type"] == "message-end":
+                            break
+                    except json.JSONDecodeError:
+                        logger.debug(f"Failed to decode JSON: {line}")
+                        pass
+        except requests.RequestException as e:
+            print(f"Request exception in stream_response: {e}")
+            print(
+                f"Response content: {r.content if 'r' in locals() else 'No response'}"
+            )
+            yield f"Error: {str(e)}"
+
+    async def _get_response(self, payload, is_title_gen: bool = False):
         """
         Handle non-streaming responses.
         """
+        headers = {
+            "Authorization": f"Bearer {self.valves.API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
         try:
-            response = await client.chat(**payload)
-            if response.choices and len(response.choices) > 0:
-                content = response.choices[0].message.content
-                logger.debug(f"Accumulated content: {content}")
-                return content
-            else:
-                logger.error(f"Unexpected response format: {response}")
-                return "Error: Unexpected response format from API"
+            r = requests.post(
+                url=f"{self.valves.BASE_URL}/chat",
+                json=payload,
+                headers=headers,
+            )
+            r.raise_for_status()
+            data = r.json()
+            logger.debug(f"Completion response: {json.dumps(data, indent=2)}")
+            if data.get("message") and data["message"] is not None:
+                message = data["message"]
+                if message.get("content") and message["content"] is not None:
+                    content = message["content"]
+                    response = content[0]["text"]
+            return response
 
         except Exception as e:
             logger.error(f"Error processing response: {str(e)}")
@@ -383,7 +407,6 @@ class Pipe:
         if not user_valves:
             user_valves = self.UserValves()
 
-        client = cohere.ClientV2(api_key=self.valves.API_KEY)
         try:
             emitter = EventEmitter(__event_emitter__)
 
@@ -397,11 +420,11 @@ class Pipe:
 
                 if body["stream"]:
                     logger.debug(f"Streaming response")
-                    async for chunk in self._stream_response(client, payload):
+                    async for chunk in self._stream_response(payload):
                         yield chunk
                 else:
                     logger.debug(f"Building response object")
-                    content = await self._get_response(client, payload, is_title_gen)
+                    content = await self._get_response(payload, is_title_gen)
                     yield content
 
                 await emitter.emit_status(
