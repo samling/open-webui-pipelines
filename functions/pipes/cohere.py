@@ -1,9 +1,10 @@
 """
-title: OpenAI Manifold Pipe
+title: Cohere Manifold Pipe
 author: samling, based on pipe by justinh-rahb and moblangeois
 author_url: https://github.com/samling/open-webui-pipelines
 version: 0.1.0
 license: MIT
+requirements: cohere
 """
 
 from functools import lru_cache
@@ -23,8 +24,10 @@ from utils.misc import get_last_user_message
 from utils.misc import pop_system_message
 
 import aiohttp
+import cohere
 import json
 import logging
+import os
 import requests
 
 logging.basicConfig(
@@ -119,11 +122,11 @@ class EventEmitter:
 class Pipe:
     class Valves(BaseModel):
         NAME_PREFIX: str = Field(
-            default="OpenAI.",
+            default="Cohere.",
             description="The prefix applied before the model names.",
         )
         BASE_URL: str = Field(
-            default="https://api.openai.com/v1",
+            default="https://api.cohere.com/v2",
             description="The base URL for OpenAI-compatible API endpoint.",
         )
         API_KEY: str = Field(
@@ -177,8 +180,7 @@ class Pipe:
             if self.valves.API_KEY:
                 try:
                     headers = {}
-                    headers["Authorization"] = f"Bearer {self.valves.API_KEY}"
-                    headers["Content-Type"] = "application/json"
+                    headers["Authorization"] = f"bearer {self.valves.API_KEY}"
 
                     r = requests.get(
                         f"{self.valves.BASE_URL}/models", headers=headers
@@ -187,20 +189,19 @@ class Pipe:
                     models = r.json()
                     return [
                         {
-                            "id": model["id"],
+                            "id": model["name"],
                             "name": f"{self.valves.NAME_PREFIX}{model['name']}" if 'name' in model else f"{self.valves.NAME_PREFIX}{model['id']}",
                         }
-                        for model in models["data"]
-                        if ("gpt" in model["id"]) or ("o1" in model["id"])
+                        for model in models["models"]
+                        if ("chat" in model["endpoints"])
                     ]
 
                 except Exception as e:
-
-                    print(f"Error: {e}")
+                    logger.debug(f"Error: {e}")
                     return [
                         {
                             "id": "error",
-                            "name": "Could not fetch models from OpenAI, please update the API Key in the valves.",
+                            "name": "Could not fetch models from Cohere, please update the API Key in the valves.",
                         },
                     ]
             else:
@@ -313,17 +314,18 @@ class Pipe:
 
         return payload
 
-    async def _stream_response(self, client: AsyncOpenAI, payload):
+    async def _stream_response(self, client: cohere.ClientV2, payload):
         """
         Handle streaming responses.
         """
         try:
-            stream = await client.chat.completions.create(
+            stream = await client.chat_stream(
                 **payload
             )
             async for chunk in stream:
-                if chunk and chunk.choices:
-                    delta = chunk.choices[0].delta
+                if chunk and chunk.delta:
+                    delta = chunk.delta
+                    # TODO
                     if delta.content is not None:
                         chunk_dict = {
                             "choices": [{
@@ -336,12 +338,12 @@ class Pipe:
         except Exception as e:
             logger.error(f"Error details: {str(e)}")
 
-    async def _get_response(self, client: AsyncOpenAI, payload, is_title_gen: bool = False):
+    async def _get_response(self, client: cohere.ClientV2, payload, is_title_gen: bool = False):
         """
         Handle non-streaming responses.
         """
         try:
-            response = await client.chat.completions.create(**payload)
+            response = await client.chat(**payload)
             if response.choices and len(response.choices) > 0:
                 content = response.choices[0].message.content
                 logger.debug(f"Accumulated content: {content}")
@@ -364,16 +366,6 @@ class Pipe:
             logger.info("Debug logging is disabled for the pipe")
 
         return self._get_openai_models()
-        # return [
-        #     {
-        #         "id": "gpt-4o-2024-11-20",
-        #         "name": f"{self.valves.NAME_PREFIX}gpt-4o-2024-11-20",
-        #     },
-        #     {
-        #         "id": "gpt-4o-mini",
-        #         "name": f"{self.valves.NAME_PREFIX}gpt-4o-mini",
-        #     },
-        # ]
 
     async def pipe(
         self,
@@ -391,11 +383,7 @@ class Pipe:
         if not user_valves:
             user_valves = self.UserValves()
 
-        client = AsyncOpenAI(
-            base_url=self.valves.BASE_URL,
-            api_key=self.valves.API_KEY
-        )
-
+        client = cohere.ClientV2(api_key=self.valves.API_KEY)
         try:
             emitter = EventEmitter(__event_emitter__)
 
