@@ -824,15 +824,8 @@ class Pipe:
         logger.debug(f"Valves:\n{pformat(self.valves)}")
         logger.debug(f"User Valves:\n{pformat(self.user_valves)}")
 
-        if (
-            self.valves.LANGFUSE_ENABLED
-            and self.valves.LANGFUSE_PUBLIC_KEY
-            and self.valves.LANGFUSE_SECRET_KEY
-            and self.valves.LANGFUSE_PUBLIC_KEY is not "pk-fake-key"
-            and self.valves.LANGFUSE_SECRET_KEY is not "sk-fake-key"
-            and self.valves.LANGFUSE_HOST
-        ):
-            logger.debug("Langfuse credentials and host present; traces are enabled")
+        if self.valves.LANGFUSE_ENABLED:
+            logger.debug("Langfuse tracing is enabled")
             litellm.success_callback = ["langfuse"]
             litellm.failure_callback = ["langfuse"]
 
