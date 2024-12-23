@@ -173,7 +173,10 @@ class Pipe:
 
         return manifold_name, model_name
 
-    def _get_openai_models(self):
+    def _get_openai_models(self, custom_models=None):
+            if custom_models is None:
+                custom_models = []
+
             if self.valves.API_KEY:
                 try:
                     headers = {}
@@ -185,7 +188,7 @@ class Pipe:
                     )
 
                     models = r.json()
-                    return [
+                    base_models = [
                         {
                             "id": model["id"],
                             "name": f"{self.valves.NAME_PREFIX}{model['name']}" if 'name' in model else f"{self.valves.NAME_PREFIX}{model['id']}",
@@ -203,8 +206,11 @@ class Pipe:
                             "name": "Could not fetch models from OpenAI, please update the API Key in the valves.",
                         },
                     ]
-            else:
-                return []
+            for model in custom_models:
+                if not model["name"].startswith(self.valves.NAME_PREFIX):
+                    model["name"] = f"{self.valves.NAME_PREFIX}{model['name']}"
+
+            return base_models + custom_models
 
     async def _build_metadata(self, __user__, __metadata__, user_valves):
         """
@@ -363,7 +369,18 @@ class Pipe:
             logger.setLevel(logging.INFO)
             logger.info("Debug logging is disabled for the pipe")
 
-        return self._get_openai_models()
+        custom_models = [
+            {
+                "id": "o1",
+                "name": "o1"
+            },
+            {
+                "id": "o1-2024-12-17",
+                "name": "o1-2024-12-17"
+            }
+        ]
+
+        return self._get_openai_models(custom_models)
         # return [
         #     {
         #         "id": "gpt-4o-2024-11-20",
