@@ -1,5 +1,5 @@
 """
-title: OpenAI Manifold Pipe
+title: DeepInfra Manifold Pipe
 author: samling, based on pipe by justinh-rahb and moblangeois
 author_url: https://github.com/samling/open-webui-pipelines
 version: 0.1.0
@@ -119,11 +119,11 @@ class EventEmitter:
 class Pipe:
     class Valves(BaseModel):
         NAME_PREFIX: str = Field(
-            default="OpenAI.",
+            default="DeepInfra.",
             description="The prefix applied before the model names.",
         )
         BASE_URL: str = Field(
-            default="https://api.openai.com/v1",
+            default="https://api.deepinfra.com/v1/openai",
             description="The base URL for OpenAI-compatible API endpoint.",
         )
         API_KEY: str = Field(
@@ -173,7 +173,7 @@ class Pipe:
 
         return manifold_name, model_name
 
-    def _get_openai_models(self, custom_models=None):
+    def _get_deepinfra_models(self, custom_models=None):
             if custom_models is None:
                 custom_models = []
 
@@ -187,6 +187,8 @@ class Pipe:
                         f"{self.valves.BASE_URL}/models", headers=headers
                     )
 
+                    # logger.debug(f"Raw model GET response:\n\t{pformat(r.json())}")
+
                     models = r.json()
                     base_models = [
                         {
@@ -194,7 +196,6 @@ class Pipe:
                             "name": f"{self.valves.NAME_PREFIX}{model['name']}" if 'name' in model else f"{self.valves.NAME_PREFIX}{model['id']}",
                         }
                         for model in models["data"]
-                        if ("gpt" in model["id"]) or ("o1" in model["id"])
                     ]
 
                 except Exception as e:
@@ -203,7 +204,7 @@ class Pipe:
                     return [
                         {
                             "id": "error",
-                            "name": "Could not fetch models from OpenAI, please update the API Key in the valves.",
+                            "name": "Could not fetch models from DeepInfra, please update the API Key in the valves.",
                         },
                     ]
             for model in custom_models:
@@ -340,8 +341,8 @@ class Pipe:
                         }
                         yield chunk_dict
         except Exception as e:
-            logger.error(f"Error details: {str(e)}")
             yield f"Error details: {str(e)}"
+            logger.error(f"Error details: {str(e)}")
 
     async def _get_response(self, client: AsyncOpenAI, payload, is_title_gen: bool = False):
         """
@@ -370,18 +371,9 @@ class Pipe:
             logger.setLevel(logging.INFO)
             logger.info("Debug logging is disabled for the pipe")
 
-        custom_models = [
-            {
-                "id": "o1",
-                "name": "o1"
-            },
-            {
-                "id": "o1-2024-12-17",
-                "name": "o1-2024-12-17"
-            }
-        ]
+        custom_models = []
 
-        return self._get_openai_models(custom_models)
+        return self._get_deepinfra_models(custom_models)
         # return [
         #     {
         #         "id": "gpt-4o-2024-11-20",
