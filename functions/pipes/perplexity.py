@@ -532,14 +532,18 @@ class Pipe:
                         except json.JSONDecodeError as je:
                             logger.error(f"JSON decode error for line: {line}")
                             logger.error(f"Error details: {str(je)}")
+                            yield f"JSON decode error for line: {line}"
+                            yield f"Error details: {str(je)}"
                             continue
 
                     except UnicodeDecodeError as ue:
                         logger.error(f"Unicode decode error: {str(ue)}")
+                        yield f"Unicode decode error: {str(ue)}"
                         continue
 
                     except Exception as e:
                         logger.exception(f"Unexpected error processing line: {str(e)}")
+                        yield f"Unexpected error processing line: {str(e)}"
                         continue
 
     async def _get_response(self, headers, payload, citations, is_title_gen: bool = False):
