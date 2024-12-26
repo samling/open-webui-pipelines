@@ -7,12 +7,13 @@ license: MIT
 """
 
 from functools import lru_cache
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
 from pprint import pformat
 from pydantic import BaseModel, Field
 from typing import (
     Any,
     AsyncGenerator,
+    Generator,
     Awaitable,
     Callable,
     Dict,
@@ -52,69 +53,6 @@ def load_json(user_value: str, as_list: bool = False) -> Union[Dict, List]:
     except (json.JSONDecodeError, TypeError) as e:
         logger.error(f"Error loading JSON: {e}, Value: {user_value}")
         return [] if as_list else {}
-
-class EventEmitter:
-    def __init__(self, event_emitter: Callable[[dict], Any] = None):
-        self.event_emitter = event_emitter
-
-    async def emit_message(self, content=""):
-        if self.event_emitter:
-            await self.event_emitter(
-                {
-                    "type": "message",
-                    "data": {
-                        "content": content
-                    }
-                }
-            )
-
-    async def emit_status(self, description="Unknown State", status="in_progress", done=False):
-        if self.event_emitter:
-            await self.event_emitter(
-                {
-                    "type": "status",
-                    "data": {
-                        "status": status,
-                        "description": description,
-                        "done": done,
-                    },
-                }
-            )
-
-    async def emit_source(self, name: str, document: str, url: str, html: bool = True):
-        if self.event_emitter:
-            await self.event_emitter(
-                {
-                    "type": "source",
-                    "data": {
-                        "document": [document],
-                        "metadata": [
-                            {
-                                "source": name,
-                                "html": html
-                            }
-                        ],
-                        "source": {
-                            "name": name,
-                            "url": url
-                        }
-                    }
-                }
-            )
-
-    async def emit_citation(self, source: str, metadata: str, document: str):
-        if self.event_emitter:
-            await self.event_emitter(
-                {
-                    "type": "citation",
-                    "data": {
-                        "document": document,
-                        "metadata": metadata,
-                        "source": source
-                    }
-                }
-            )
-
 
 class Pipe:
     class Valves(BaseModel):
@@ -213,7 +151,7 @@ class Pipe:
 
             return base_models + custom_models
 
-    async def _build_metadata(self, __user__, __metadata__, user_valves):
+    def _build_metadata(self, __user__, __metadata__, user_valves):
         """
         Construct additional metadata to add to the request.
         This includes trace data to be sent to an observation platform like Langfuse.
@@ -230,13 +168,12 @@ class Pipe:
 
         return metadata
 
-    async def _build_completion_payload(
+    def _build_completion_payload(
         self,
         body: dict,
         __user__: dict,
         metadata: dict,
         user_valves: UserValves,
-        emitter: EventEmitter
     ) -> dict:
         """
         Build the final payload, including the metadata from _build_metadata
@@ -320,15 +257,15 @@ class Pipe:
 
         return payload
 
-    async def _stream_response(self, client: AsyncOpenAI, payload):
+    def _stream_response(self, client: OpenAI, payload):
         """
         Handle streaming responses.
         """
         try:
-            stream = await client.chat.completions.create(
+            stream = client.chat.completions.create(
                 **payload
             )
-            async for chunk in stream:
+            for chunk in stream:
                 if chunk and chunk.choices:
                     delta = chunk.choices[0].delta
                     if delta.content is not None:
@@ -344,12 +281,12 @@ class Pipe:
             yield f"Error details: {str(e)}"
             logger.error(f"Error details: {str(e)}")
 
-    async def _get_response(self, client: AsyncOpenAI, payload, is_title_gen: bool = False):
+    def _get_response(self, client: OpenAI, payload, is_title_gen: bool = False):
         """
         Handle non-streaming responses.
         """
         try:
-            response = await client.chat.completions.create(**payload)
+            response = client.chat.completions.create(**payload)
             if response.choices and len(response.choices) > 0:
                 content = response.choices[0].message.content
                 logger.debug(f"Accumulated content: {content}")
@@ -385,13 +322,12 @@ class Pipe:
         #     },
         # ]
 
-    async def pipe(
+    def pipe(
         self,
         body: dict,
         __user__: dict,
         __metadata__: dict,
-        __event_emitter__: Callable[[Any], Awaitable[None]],
-    ) -> AsyncGenerator[str, None]:
+    ) -> Generator[str, None, None]:
         logger.debug(f"pipe:{__name__}")
 
         if not self.valves.API_KEY:
@@ -401,16 +337,14 @@ class Pipe:
         if not user_valves:
             user_valves = self.UserValves()
 
-        client = AsyncOpenAI(
+        client = OpenAI(
             base_url=self.valves.BASE_URL,
             api_key=self.valves.API_KEY
         )
 
         try:
-            emitter = EventEmitter(__event_emitter__)
-
-            metadata = await self._build_metadata(__user__, __metadata__, user_valves)
-            payload = await self._build_completion_payload(body, __user__, metadata, user_valves, emitter)
+            metadata = self._build_metadata(__user__, __metadata__, user_valves)
+            payload = self._build_completion_payload(body, __user__, metadata, user_valves)
 
             logger.debug(f"Payload: {pformat(payload)}")
 
@@ -419,18 +353,13 @@ class Pipe:
 
                 if body["stream"]:
                     logger.debug(f"Streaming response")
-                    async for chunk in self._stream_response(client, payload):
+                    for chunk in self._stream_response(client, payload):
                         yield chunk
                 else:
                     logger.debug(f"Building response object")
-                    content = await self._get_response(client, payload, is_title_gen)
+                    content = self._get_response(client, payload, is_title_gen)
                     yield content
 
-                await emitter.emit_status(
-                    status="complete",
-                    description="",
-                    done=True,
-                )
             except aiohttp.ClientError as e:
                 logger.error(f"Error during request: {e}")
                 yield f"Error: {e}"
