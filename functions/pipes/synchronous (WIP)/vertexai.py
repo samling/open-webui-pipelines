@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from typing import (
     Any,
     AsyncGenerator,
+    Generator,
     Awaitable,
     Callable,
     Dict,
@@ -40,55 +41,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
-
-class EventEmitter:
-    def __init__(self, event_emitter: Callable[[dict], Any] = None):
-        self.event_emitter = event_emitter
-
-    async def emit_message(self, content=""):
-        if self.event_emitter:
-            await self.event_emitter({"type": "message", "data": {"content": content}})
-
-    async def emit_status(
-        self, description="Unknown State", status="in_progress", done=False
-    ):
-        if self.event_emitter:
-            await self.event_emitter(
-                {
-                    "type": "status",
-                    "data": {
-                        "status": status,
-                        "description": description,
-                        "done": done,
-                    },
-                }
-            )
-
-    async def emit_source(self, name: str, document: str, url: str, html: bool = True):
-        if self.event_emitter:
-            await self.event_emitter(
-                {
-                    "type": "source",
-                    "data": {
-                        "document": [document],
-                        "metadata": [{"source": name, "html": html}],
-                        "source": {"name": name, "url": url},
-                    },
-                }
-            )
-
-    async def emit_citation(self, source: str, metadata: str, document: str):
-        if self.event_emitter:
-            await self.event_emitter(
-                {
-                    "type": "citation",
-                    "data": {
-                        "document": document,
-                        "metadata": metadata,
-                        "source": source,
-                    },
-                }
-            )
 
 class Pipe:
     class Valves(BaseModel):
@@ -233,7 +185,6 @@ class Pipe:
         __user__: dict,
         metadata: dict,
         user_valves: UserValves,
-        emitter: EventEmitter,
     ) -> dict:
         logger.debug(f"Model from open-webui request: {body['model']}")
         manfold_name, model_name = self._parse_model_string(body['model'])
@@ -270,17 +221,23 @@ class Pipe:
 
         tools=[]
         if self.valves.ENABLE_GROUNDING or user_valves.ENABLE_GROUNDING:
-            logger.debug(f"Grounding enabled.")
-            if model_name.startswith("gemini-2.0"):
-                google_search_tool = Tool(
-                    google_search = GoogleSearch()
-                )
-                tools=[google_search_tool]
-            elif not model_name.startswith("gemini-exp"):
-                google_search_tool = Tool(
-                    google_search_retrieval = GoogleSearchRetrieval()
-                )
-                tools=[google_search_tool]
+            last_message = messages[-1]
+            if isinstance(last_message.get("content"), list):
+                has_images = any(content["type"] == "image_url" for content in last_message["content"])
+                if has_images:
+                    raise ValueError("Grounding cannot be used with image inputs. Please disable grounding or remove images from your message.")
+                else:
+                    logger.debug(f"Grounding enabled.")
+                    if model_name.startswith("gemini-2.0"):
+                        google_search_tool = Tool(
+                            google_search = GoogleSearch()
+                        )
+                        tools=[google_search_tool]
+                    elif not model_name.startswith("gemini-exp"):
+                        google_search_tool = Tool(
+                            google_search_retrieval = GoogleSearchRetrieval()
+                        )
+                        tools=[google_search_tool]
 
         generation_config = {
             "temperature": body.get("temperature", 0.7),
@@ -358,7 +315,7 @@ class Pipe:
                             }
                             citations.append(citation)
 
-    async def stream_response(self, response, citations):
+    def stream_response(self, response, citations):
         try:
             for chunk in response:
                 if chunk.text:
@@ -370,7 +327,7 @@ class Pipe:
             yield f"Error processing response: {str(e)}"
 
 
-    async def get_response(self, response, citations):
+    def get_response(self, response, citations):
         try:
             self._process_citations(response, citations)
             return response.text if hasattr(response, 'text') else str(response)
@@ -414,20 +371,18 @@ class Pipe:
             },
         ]
 
-    async def pipe(
+    def pipe(
         self,
         body: dict,
         __user__: dict,
         __metadata__: dict,
-        __event_emitter__: Callable[[Any], Awaitable[None]],
-    ) -> AsyncGenerator[str, None]:
+    ) -> Generator[str, None, None]:
         try:
             logger.debug(f"pipe:{__name__}")
 
             user_valves = __user__.get("valves", self.UserValves())
-            emitter = EventEmitter(__event_emitter__)
 
-            payload = self._build_completion_payload(body, __user__, __metadata__, user_valves, emitter)
+            payload = self._build_completion_payload(body, __user__, __metadata__, user_valves)
 
             if not self.valves.GOOGLE_API_KEY:
                 raise Exception("GOOGLE_API_KEY not provided in valves.")
@@ -439,13 +394,13 @@ class Pipe:
                     **payload
                 )
 
-                async for text in self.stream_response(response, citations):
+                for text in self.stream_response(response, citations):
                     yield text
             else:
                 response = self.client.models.generate_content(
                     **payload
                 )
-                text = await self.get_response(response, citations)
+                text = self.get_response(response, citations)
                 yield text
 
             if citations and len(citations) > 0:
