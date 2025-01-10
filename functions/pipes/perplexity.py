@@ -4,15 +4,16 @@ author: samling, based on pipe by justinh-rahb and moblangeois
 author_url: https://github.com/samling/open-webui-pipelines
 version: 0.1.0
 license: MIT
+requirements: beautifulsoup4, yt_dlp
 """
 
+from bs4 import BeautifulSoup
 from functools import lru_cache
 from pprint import pformat
 from pydantic import BaseModel, Field
 from typing import (
     Any,
     AsyncGenerator,
-    Generator,
     Awaitable,
     Callable,
     Dict,
@@ -26,8 +27,6 @@ import aiohttp
 import json
 import logging
 import re
-import requests
-import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,6 +53,69 @@ def load_json(user_value: str, as_list: bool = False) -> Union[Dict, List]:
     except (json.JSONDecodeError, TypeError) as e:
         logger.error(f"Error loading JSON: {e}, Value: {user_value}")
         return [] if as_list else {}
+
+class EventEmitter:
+    def __init__(self, event_emitter: Callable[[dict], Any] = None):
+        self.event_emitter = event_emitter
+
+    async def emit_message(self, content=""):
+        if self.event_emitter:
+            await self.event_emitter(
+                {
+                    "type": "message",
+                    "data": {
+                        "content": content
+                    }
+                }
+            )
+
+    async def emit_status(self, description="Unknown State", status="in_progress", done=False):
+        if self.event_emitter:
+            await self.event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "status": status,
+                        "description": description,
+                        "done": done,
+                    },
+                }
+            )
+
+    async def emit_source(self, name: str, document: str, url: str, html: bool = True):
+        if self.event_emitter:
+            await self.event_emitter(
+                {
+                    "type": "source",
+                    "data": {
+                        "document": [document],
+                        "metadata": [
+                            {
+                                "source": name,
+                                "html": html
+                            }
+                        ],
+                        "source": {
+                            "name": name,
+                            "url": url
+                        }
+                    }
+                }
+            )
+
+    async def emit_citation(self, source: str, metadata: str, document: str):
+        if self.event_emitter:
+            await self.event_emitter(
+                {
+                    "type": "citation",
+                    "data": {
+                        "document": document,
+                        "metadata": metadata,
+                        "source": source
+                    }
+                }
+            )
+
 
 class Pipe:
     class Valves(BaseModel):
@@ -137,7 +199,7 @@ class Pipe:
 
         return manifold_name, model_name
 
-    def _build_metadata(self, __user__, __metadata__, user_valves):
+    async def _build_metadata(self, __user__, __metadata__, user_valves):
         """
         Construct additional metadata to add to the request.
         This includes trace data to be sent to an observation platform like Langfuse.
@@ -167,12 +229,13 @@ class Pipe:
 
         return metadata
 
-    def _build_completion_payload(
+    async def _build_completion_payload(
         self,
         body: dict,
         __user__: dict,
         metadata: dict,
         user_valves: UserValves,
+        emitter: EventEmitter
     ) -> dict:
         """
         Build the final payload, including the metadata from _build_metadata
@@ -211,6 +274,7 @@ class Pipe:
                 # If we're not already using the rerouted models and we're not using a model that we want to skip rerouting in, reroute it
                 if model_name != self.valves.VISION_MODEL_ID and model_name not in self.valves.SKIP_REROUTE_MODELS:
                     model_name = self.valves.VISION_MODEL_ID
+                    await emitter.emit_status(description=f"Request routed to {self.valves.VISION_MODEL_ID}", done=True)
                 else:
                     logger.debug(f"Model is the same as target vision model or is in SKIP_REROUTE_MODELS")
 
@@ -280,14 +344,97 @@ class Pipe:
 
         return payload
 
-    def _build_citation_list(self, citations: set) -> str:
+    async def _get_url_title(self, url: str) -> str:
+        import yt_dlp as ytdl
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+
+        try:
+            if "youtube.com" in url or "youtu.be" in url:
+                    ydl_opts = {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': True
+                    }
+                    if hasattr(self.valves, 'YOUTUBE_COOKIES_FILEPATH') and self.valves.YOUTUBE_COOKIES_FILEPATH and self.valves.YOUTUBE_COOKIES_FILEPATH is not "path/to/cookies.txt":
+                        ydl_opts['cookiefile'] = self.valves.YOUTUBE_COOKIES_FILEPATH
+
+                    try:
+                        with ytdl.YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(url, download=False)
+                            return f"YouTube - {info.get('title', url)}"
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve youtube title from url: {url}")
+            else:
+                async with aiohttp.ClientSession() as session:
+                    try:
+                        async with session.get(url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT) as response:
+                            if response.status == 200:
+                                html = await response.text()
+                                soup = BeautifulSoup(html, "html.parser")
+
+                                # Try metadata title first
+                                meta_title = soup.find("meta", property="og:title")
+                                if meta_title and meta_title.get("content"):
+                                    return meta_title["content"].strip()
+                                
+                                # Fall back to regular title
+                                if soup.title and soup.title.string:
+                                    return soup.title.string.strip()
+
+                                # Finally, try h1
+                                if soup.h1:
+                                    return soup.h1.get_text().strip()
+                            else:
+                                logger.warning(f"Failed to retrieve url: {url} (status code {response.status})")
+                    except aiohttp.ClientError as e:
+                        logger.warning(f"Initial request failed, trying with different User-Agent: {str(e)}")
+
+                        # Try with a mobile user agent
+                        headers['User-Agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1'
+
+                        try:
+                            async with session.get(url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT) as response:
+                                if response.status == 200:
+                                    html = await response.text()
+                                    soup = BeautifulSoup(html, "html.parser")
+
+                                    # Try metadata title first
+                                    meta_title = soup.find("meta", property="og:title")
+                                    if meta_title and meta_title.get("content"):
+                                        return meta_title["content"].strip()
+                                    
+                                    # Fall back to regular title
+                                    if soup.title and soup.title.string:
+                                        return soup.title.string.strip()
+
+                                    # Finally, try h1
+                                    if soup.h1:
+                                        return soup.h1.get_text().strip()
+                        except Exception as e2:
+                            logger.warning(f"Both attempts failed for url {url}: {str(e2)}")
+
+        except Exception as e:
+            logger.warning(f"Failed to retrieve url: {url}")
+
+        return url
+
+    async def _build_citation_list(self, citations: set) -> str:
         """
         Take a list of citations and return it as a list.
         """
         citations_list = []
         for i, url in enumerate(citations, start=1):
+            title = await self._get_url_title(url)
             citation = {
-                "title": url,
+                "title": title,
                 "url": url,
                 "content": ""
             }
@@ -295,6 +442,23 @@ class Pipe:
             logger.debug(f"Appended citation: {citation}")
 
         return citations_list
+
+    async def _process_citations(self, citations: set, emitter: EventEmitter, is_title_gen: bool = False):
+        """
+        Process and emit citations if any exist and we're not generating a title.
+        """
+        if citations and not is_title_gen:
+            await emitter.emit_status(description=f"Formatting citations...")
+
+            citations_list = await self._build_citation_list(citations)
+
+            await emitter.emit_message(content=f"\n\n<details>\n<summary>Sources</summary>")
+            for i, citation in enumerate(citations_list, 1):
+                await emitter.emit_message(
+                    content=f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+                )
+            await emitter.emit_message(content=f"\n</details>\n")
+            await emitter.emit_status(description="", done=True, status="complete")
 
     def _convert_citations_to_superscript(self, match):
         """
@@ -319,41 +483,42 @@ class Pipe:
         citation = match.group(0)  # Get the number from within the brackets
         return ''.join(superscript_map.get(c, c) for c in citation)
 
-    def _stream_response(self, headers, payload, citations):
+    async def _stream_response(self, headers, payload, citations):
         """
         Handle streaming responses.
         """
-        
-        try:
-            with requests.post(
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
                 url=f"{self.valves.PERPLEXITY_API_BASE_URL}/chat/completions",
                 headers=headers,
                 json=payload
             ) as response:
-                if response.status_code != 200:
-                    raise Exception(
-                        f"HTTP Error {response.status_code}: {response.text}"
-                    )
+                async for line in response.content:
+                    if not line:
+                        continue
 
-                data = None
-
-                for line in response.iter_lines():
-                    if line:
+                    try:
                         line = line.decode("utf-8").strip()
+                        # logger.debug(f"Raw line: {line}") # this causes a lot of log spam
 
                         if not line or line == "data: ":
                             continue
 
                         if line.startswith("data: "):
                             line = line[6:]
-                            try:
-                                chunk = json.loads(line)
-                                if "citations" in chunk:
-                                    if isinstance(chunk["citations"], list):
-                                        citations.update(chunk["citations"])
-                                    elif isinstance(chunk["citations"], str):
-                                        citations.update(chunk["citations"])
 
+                        if line == "[DONE]":
+                            continue
+
+                        try:
+                            chunk = json.loads(line)
+                            if "citations" in chunk:
+                                if isinstance(chunk["citations"], list):
+                                    citations.update(chunk["citations"])
+                                elif isinstance(chunk["citations"], str):
+                                    citations.update(chunk["cutations"])
+
+                            if chunk.get("choices") and chunk["choices"][0].get("delta") and chunk["choices"][0]["delta"].get("content"):
                                 content = chunk["choices"][0]["delta"]["content"]
 
                                 modified_content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
@@ -362,63 +527,59 @@ class Pipe:
                                     logger.debug(f"Converted citations in chunk: {content} -> {modified_content}")
                                     chunk["choices"][0]["delta"]["content"] = modified_content
 
-                                yield modified_content
+                                yield chunk
 
-                                time.sleep(
-                                    0.01
-                                )  # Delay to avoid overwhelming the client
+                        except json.JSONDecodeError as je:
+                            logger.error(f"JSON decode error for line: {line}")
+                            logger.error(f"Error details: {str(je)}")
+                            yield f"JSON decode error for line: {line}"
+                            yield f"Error details: {str(je)}"
+                            continue
 
-                            except json.JSONDecodeError:
-                                print(f"Failed to parse JSON: {line}")
-                            except KeyError as e:
-                                print(f"Unexpected data structure: {e}")
-                                print(f"Full data: {data}")
-                logger.debug(f"Accumulated citations: {citations}")
+                    except UnicodeDecodeError as ue:
+                        logger.error(f"Unicode decode error: {str(ue)}")
+                        yield f"Unicode decode error: {str(ue)}"
+                        continue
 
-                citations_content = ""
-                if citations and len(citations) > 0:
-                    citations_content += "\n\n<details>\n<summary>Sources</summary>\n"
-                    for i, citation in enumerate(citations, 1):
-                        citations_content += f"\n[{i}] [{citation}]({citation})"
-                    citations_content += "\n</details>"
-                yield citations_content
-        except requests.exceptions.RequestException as e:
-            print(f"Request failed: {e}")
-            yield f"Error: Request failed: {e}"
-        except Exception as e:
-            print(f"General error in stream_response method: {e}")
-            yield f"Error: {e}"
+                    except Exception as e:
+                        logger.exception(f"Unexpected error processing line: {str(e)}")
+                        yield f"Unexpected error processing line: {str(e)}"
+                        continue
 
-    def _get_response(self, headers, payload, citations, is_title_gen: bool = False):
+    async def _get_response(self, headers, payload, citations, is_title_gen: bool = False):
         """
         Handle non-streaming responses.
         """
-        try:
-            with requests.post(
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
                 url=f"{self.valves.PERPLEXITY_API_BASE_URL}/chat/completions",
                 headers=headers,
                 json=payload
             ) as response:
-                if response.status_code != 200:
-                    raise Exception(f"HTTP Error {response.status_code}: {response.text}")
+                try:
+                    response_json = await response.json()
+                    logger.debug(f"response_json: {pformat(response_json)}")
+                    if "choices" in response_json and len(response_json["choices"]) > 0:
+                        content = response_json["choices"][0]["message"]["content"]
+                        logger.debug(f"Accumulated content: {content}")
+                    else:
+                        logger.error(f"Unexpected response format: {response_json}")
+                        return "Error: Unexpected response format from API"
 
-                response_json = response.json()
+                    if not is_title_gen:
+                        if response_json.get("citations") and response_json["citations"] and len(response_json["citations"]) > 0:
+                            content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
+                            citations_list = await self._build_citation_list(response_json["citations"])
+                            content += "\n\n<details>\n<summary>Sources</summary>\n"
+                            for i, citation in enumerate(citations_list, 1):
+                                content += f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
+                            content += "\n</details>"
 
-                content = response_json["choices"][0]["message"]["content"]
+                    return content
 
-                if not is_title_gen:
-                    if response_json.get("citations") and response_json["citations"] and len(response_json["citations"]) > 0:
-                        content = re.sub(r'\[\d+\]', self._convert_citations_to_superscript, content)
-                        citations_list = self._build_citation_list(response_json["citations"])
-                        content += "\n\n<details>\n<summary>Sources</summary>\n"
-                        for i, citation in enumerate(citations_list, 1):
-                            content += f"\n[{i}] [{citation.get('title')}]({citation.get('url')})"
-                        content += "\n</details>"
-
-                return content
-        except requests.exceptions.RequestException as e:
-            print(f"Failed non-stream request: {e}")
-            return f"Error: {e}"
+                except Exception as e:
+                    logger.error(f"Error processing response: {str(e)}")
+                    return f"Error: {str(e)}"              
 
     def pipes(self):
         global logger
@@ -460,12 +621,13 @@ class Pipe:
             },
         ]
 
-    def pipe(
+    async def pipe(
         self,
         body: dict,
         __user__: dict,
         __metadata__: dict,
-    ) -> Generator[str, None, None]:
+        __event_emitter__: Callable[[Any], Awaitable[None]],
+    ) -> AsyncGenerator[str, None]:
         logger.debug(f"pipe:{__name__}")
 
         if not self.valves.PERPLEXITY_API_KEY:
@@ -484,8 +646,10 @@ class Pipe:
         citations = set()
 
         try:
-            metadata = self._build_metadata(__user__, __metadata__, user_valves)
-            payload = self._build_completion_payload(body, __user__, metadata, user_valves)
+            emitter = EventEmitter(__event_emitter__)
+
+            metadata = await self._build_metadata(__user__, __metadata__, user_valves)
+            payload = await self._build_completion_payload(body, __user__, metadata, user_valves, emitter)
 
             logger.debug(f"Payload: {pformat(payload)}")
 
@@ -494,14 +658,21 @@ class Pipe:
 
                 if body["stream"]:
                     logger.debug(f"Streaming response")
-                    for chunk in self._stream_response(headers, payload, citations):
+                    async for chunk in self._stream_response(headers, payload, citations):
                         yield chunk
+                    if citations:
+                        await self._process_citations(citations, emitter, is_title_gen)
                 else:
                     logger.debug(f"Building response object")
-                    content = self._get_response(headers, payload, citations, is_title_gen)
+                    content = await self._get_response(headers, payload, citations, is_title_gen)
                     yield content
 
-            except requests.exceptions.RequestException as e:
+                await emitter.emit_status(
+                    status="complete",
+                    description="",
+                    done=True,
+                )
+            except aiohttp.ClientError as e:
                 logger.error(f"Error during request: {e}")
                 yield f"Error: {e}"
         except Exception as e:

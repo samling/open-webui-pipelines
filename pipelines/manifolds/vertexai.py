@@ -48,26 +48,11 @@ logger = logging.getLogger(__name__)
 class Pipeline:
     class Valves(BaseModel):
         """Options to change from the WebUI"""
-        NAME_PREFIX: str = Field(
-            default="VertexAI.",
-            description="The prefix applied before the model names.",
-        )
-        GOOGLE_API_KEY: str = Field(
-            default="fake-key",
-            description="Google API key."
-        )
-        USE_PERMISSIVE_SAFETY: bool = Field(
-            default=False,
-            description="Globally enable permissive safety."
-        )
-        ENABLE_GROUNDING: bool = Field(
-            default=False,
-            description="Globally enable web search-based grounding."
-        )
-        PIPE_DEBUG: bool = Field(
-            default=False,
-            description="Enable pipe debugging."
-        )
+        NAME_PREFIX: str 
+        GOOGLE_API_KEY: str
+        USE_PERMISSIVE_SAFETY: bool
+        ENABLE_GROUNDING: bool
+        PIPE_DEBUG: bool
 
     class UserValves(BaseModel):
         USE_PERMISSIVE_SAFETY: bool = Field(
@@ -105,8 +90,11 @@ class Pipeline:
         logger.debug(f"Initialized user valves: {self.user_valves.json()}")
         
         self.client: google.genai.Client | None = None
-        
-        self.pipelines = [
+
+        self.pipelines = self.get_models()
+
+    def get_models(self):
+        models = [
             {
                 "id": "gemini-2.0-flash-exp",
                 "name": f"{self.valves.NAME_PREFIX}gemini-2.0-flash-exp"
@@ -128,8 +116,9 @@ class Pipeline:
                 "name": f"{self.valves.NAME_PREFIX}gemini-1.5-pro-002"
             },
         ]
-        logger.debug(f"Initialized pipelines: {json.dumps(self.pipelines, indent=2)}")
-
+        logger.debug(f"Initialized pipelines: {json.dumps(models, indent=2)}")
+        return models
+        
     async def on_startup(self) -> None:
         logger.info("Starting pipeline initialization")
         
@@ -146,12 +135,13 @@ class Pipeline:
                 api_key = self.valves.GOOGLE_API_KEY
             )
             logger.info("Successfully initialized Google GenAI client")
+            pass
         except Exception as e:
             logger.error(f"Failed to initialize Google GenAI client: {str(e)}")
             raise
 
     async def on_valves_updated(self) -> None:
-        logger.info("Updating pipeline configuration")
+        self.pipelines = self.get_models()
         
         if self.valves.PIPE_DEBUG:
             logger.setLevel(logging.DEBUG)
@@ -169,6 +159,9 @@ class Pipeline:
         except Exception as e:
             logger.error(f"Failed to reinitialize Google GenAI client: {str(e)}")
             raise
+
+        logger.info("Updating pipeline configuration")
+        pass
 
     async def on_shutdown(self) -> None:
         logger.info("Shutting down pipeline")

@@ -19,12 +19,12 @@ from typing import (
     List,
     Union,
     )
+from utils.misc import get_last_user_message
+from utils.misc import pop_system_message
 
 import aiohttp
-import base64
 import json
 import logging
-import os
 import re
 import requests
 import time
@@ -55,117 +55,60 @@ def load_json(user_value: str, as_list: bool = False) -> Union[Dict, List]:
         logger.error(f"Error loading JSON: {e}, Value: {user_value}")
         return [] if as_list else {}
 
-class Pipeline:
+class Pipe:
     class Valves(BaseModel):
-        NAME_PREFIX: str
-        PERPLEXITY_API_BASE_URL: str
-        PERPLEXITY_API_KEY: str
-        PIPE_DEBUG: bool
-        EXTRA_METADATA: str
-        EXTRA_TAGS: str
-        REQUEST_TIMEOUT: int
-        YOUTUBE_COOKIES_FILEPATH: str
-        PERPLEXITY_RETURN_CITATIONS: bool
-        PERPLEXITY_RETURN_IMAGES: bool
-        PERPLEXITY_RETURN_RELATED_QUESTIONS: bool
+        NAME_PREFIX: str = Field(
+            default="Perplexity.",
+            description="The prefix applied before the model names.",
+        )
+        PERPLEXITY_API_BASE_URL: str = Field(
+            default="https://api.perplexity.ai",
+            description="The base URL for Perplexity API endpoints.",
+        )
+        PERPLEXITY_API_KEY: str = Field(
+            default="",
+            description="Required API key to access Perplexity services.",
+        )
+        PIPE_DEBUG: bool = Field(
+            default=False, description="(Optional) Enable debugging for the pipe."
+        )
+        EXTRA_METADATA: str = Field(
+            default="{}", description='(Optional) Additional metadata, e.g. {"key": "value"}'
+        )
+        EXTRA_TAGS: str = Field(
+            default='["open-webui"]',
+            description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
+        )
+        REQUEST_TIMEOUT: int = Field(
+            default=5,
+            description="(Optional) Timeout (in seconds) for aiohttp session requests. Default is 5s."
+        )
+        YOUTUBE_COOKIES_FILEPATH: str = Field(
+            default="path/to/cookies.txt",
+            description="(Optional) Path to cookies file from youtube.com to aid in title retrieval for citations."
+        )
+        PERPLEXITY_RETURN_CITATIONS: bool = Field(
+            default=True, description="(Optional) Enable citation retrieval for Perplexity models."
+        )
+        PERPLEXITY_RETURN_IMAGES: bool = Field(
+            default=False, description="(Optional) Enable image retrieval for Perplexity models. Note: This is a beta feature."
+        )
+        PERPLEXITY_RETURN_RELATED_QUESTIONS: bool = Field(
+            default=False, description="(Optional) Enable related question retrieval for Perplexity models. Note: This is a beta feature."
+        )
 
     class UserValves(BaseModel):
-        EXTRA_METADATA: str
-        EXTRA_TAGS: str
+        EXTRA_METADATA: str = Field(
+            default="{}", description='(Optional) Additional metadata, e.g. {"key": "value"}'
+        )
+        EXTRA_TAGS: str = Field(
+            default='["open-webui"]',
+            description='(Optional) A list of tags to apply to requests, e.g. ["open-webui"]',
+        )
 
     def __init__(self):
-        logger.debug("Initializing Pipeline")
         self.type = "manifold"
-
-        env_vars = {
-            "NAME_PREFIX": os.getenv('NAME_PREFIX', "Perplexity."),
-            "PERPLEXITY_API_BASE_URL": os.getenv('PERPLEXITY_API_BASE_URL', "https://api.perplexity.ai"),
-            "PERPLEXITY_API_KEY": os.getenv('PERPLEXITY_API_KEY', "fake-key"),
-            "PIPE_DEBUG": os.getenv('PIPE_DEBUG', False),
-            "EXTRA_METADATA": os.getenv('EXTRA_METADATA', "{}"),
-            "EXTRA_TAGS": os.getenv('EXTRA_TAGS', ""),
-            "REQUEST_TIMEOUT": os.getenv('REQUEST_TIMEOUT', 5),
-            "YOUTUBE_COOKIES_FILEPATH": os.getenv("YOUTUBE_COOKIES_FILEPATH", "path/to/cookies.txt"),
-            "PERPLEXITY_RETURN_CITATIONS": os.getenv('PERPLEXITY_RETURN_CITATIONS', False),
-            "PERPLEXITY_RETURN_IMAGES": os.getenv('PERPLEXITY_RETURN_IMAGES', False),
-            "PERPLEXITY_RETURN_RELATED_QUESTIONS": os.getenv('PERPLEXITY_RETURN_RELATED_QUESTIONS', False),
-        }
-        logger.debug(f"Loaded environment variables: {json.dumps({k: '***' if k == 'GOOGLE_API_KEY' else v for k,v in env_vars.items()})}")
-
-        self.valves = self.Valves(**env_vars)
-
-        self.user_valves = self.UserValves(
-            **{
-                "EXTRA_METADATA": os.getenv("EXTRA_METADATA", "{}"),
-                "EXTRA_TAGS": os.getenv("EXTRA_TAGS", "")
-            }
-        )
-        logger.debug(f"Initialized user valves: {self.user_valves.model_dump_json()}")
-
-        self.pipelines = self.get_models()
-
-    def get_models(self):
-        return [
-            {
-                "id": "llama-3.1-sonar-small-128k-online",
-                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Small 128k Online",
-            },
-            {
-                "id": "llama-3.1-sonar-large-128k-online",
-                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Large 128k Online",
-            },
-            {
-                "id": "llama-3.1-sonar-huge-128k-online",
-                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Huge 128k Online",
-            },
-            {
-                "id": "llama-3.1-sonar-small-128k-chat",
-                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Small 128k Chat",
-            },
-            {
-                "id": "llama-3.1-sonar-large-128k-chat",
-                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Large 128k Chat",
-            },
-            {
-                "id": "llama-3.1-sonar-huge-128k-chat",
-                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Huge 128k Chat",
-            },
-            {
-                "id": "llama-3.1-8b-instruct",
-                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 8B Instruct",
-            },
-            {
-                "id": "llama-3.1-70b-instruct",
-                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 70B Instruct",
-            },
-        ]
-
-    async def on_startup(self) -> None:
-        if self.valves.PIPE_DEBUG:
-            logger.setLevel(logging.DEBUG)
-            logger.debug("Debug logging is enabled for the pipe")
-        else:
-            logger.setLevel(logging.INFO)
-            logger.info("Debug logging is disabled for the pipe")
-
-        logger.info("Starting pipeline initialization")
-        pass
-        
-    async def on_valves_updated(self) -> None:
-        self.pipelines = self.get_models()
-
-        if self.valves.PIPE_DEBUG:
-            logger.setLevel(logging.DEBUG)
-            logger.debug("Debug logging is enabled for the pipe")
-        else:
-            logger.setLevel(logging.INFO)
-            logger.info("Debug logging is disabled for the pipe")
-
-        logger.info("Updating pipeline configuration")
-        pass
-
-    async def on_shutdown(self) -> None:
-        logger.info("Shutting down pipeline")
+        self.valves = self.Valves()
 
     def _parse_model_string(self, model_id):
         """
@@ -226,54 +169,75 @@ class Pipeline:
 
     def _build_completion_payload(
         self,
-        user_message: str,
-        model_id: str,
-        messages: List[dict],
-        body: dict
+        body: dict,
+        __user__: dict,
+        metadata: dict,
+        user_valves: UserValves,
     ) -> dict:
         """
         Build the final payload, including the metadata from _build_metadata
         """
-        logger.debug(f"Building completion payload for model: {model_id}")
-        logger.debug(f"User message: {user_message}")
-        logger.debug(f"Request body: {pformat(body)}")
+        # Models from this pipe look like e.g. "{manifold_name}.gpt-4o" or "{manifold_name}.anthropic/claude-3.5-sonnet"
+        logger.debug(f"Model from open-webui request: {body['model']}")
+        manfold_name, model_name = self._parse_model_string(body['model'])
 
-        model_name = model_id
-        logger.debug(f"Using model name: {model_name}")
+        # Get the most recent user message
+        messages = body.get("messages", [])
+        last_user_message_content = get_last_user_message(messages)
+        if last_user_message_content is None:
+            return body
 
-        # Process system prompt
-        system_messages = [msg for msg in messages if msg["role"] == "system"]
-        system_message = system_messages[-1]["content"] if system_messages else None
+        # Process system prompt if there is one
+        system_message, messages = pop_system_message(messages)
+        system_prompt = "You are a helpful assistant."
+        if system_message is not None:
+            logger.debug(f"Using non-default system prompt: {system_message['content']}")
+            system_prompt = system_message["content"]
+
+        # Check for images in the last user message by inspecting the messages directly
+        has_images = False
+        for message in reversed(messages):
+            if message["role"] == "user":
+                if isinstance(message.get("content"), list):
+                    has_images = any(
+                        item.get("type") == "image_url" for item in message["content"]
+                    )
+                break
+
+        # Set the model to the vision model if it's defined and there's an image in the most recent user message
+        if has_images:
+            logger.debug(f"Found image in last user message; attempting to reroute request to vision model")
+            if self.valves.VISION_MODEL_ID and self.valves.VISION_MODEL_ID is not "fake-reroute-model":
+                # If we're not already using the rerouted models and we're not using a model that we want to skip rerouting in, reroute it
+                if model_name != self.valves.VISION_MODEL_ID and model_name not in self.valves.SKIP_REROUTE_MODELS:
+                    model_name = self.valves.VISION_MODEL_ID
+                else:
+                    logger.debug(f"Model is the same as target vision model or is in SKIP_REROUTE_MODELS")
 
         # Clean base64-encoded images from previous messages
         logger.debug(f"Stripping encoded image data from past messages")
         cleaned_messages = []
         for message in messages:
-            if message["role"] != "system":
-                if not cleaned_messages or (
-                    cleaned_messages[-1]["role"] != message["role"] and
-                    (cleaned_messages[-1]["role"] == "user" or message["role"] == "user")
-                ):
-                    cleaned_message = message.copy()
-                    if isinstance(message.get("content"), list):
-                        if (message["role"] == "user" and 
-                            any(item.get("type") == "text" and item.get("text") == user_message
-                                for item in message["content"])):
-                            # Keep the current message intact
-                            cleaned_message = message
-                        else:
-                            # Clean up old messages
-                            cleaned_content = []
-                            for content in message["content"]:
-                                if content.get("type") == "image_url" and "url" in content["image_url"]:
-                                    if content["image_url"]["url"].startswith("data:image"):
-                                        content = {
-                                            "type": "text",
-                                            "text": "[Previous Image]"
-                                        }
-                                cleaned_content.append(content)
-                            cleaned_message["content"] = cleaned_content
-                    cleaned_messages.append(cleaned_message)
+            cleaned_message = message.copy()
+            if isinstance(message.get("content"), list):
+                if (message["role"] == "user" and 
+                    any(item.get("type") == "text" and item.get("text") == last_user_message_content
+                        for item in message["content"])):
+                    # Keep the current message intact
+                    cleaned_message = message
+                else:
+                    # Clean up old messages
+                    cleaned_content = []
+                    for content in message["content"]:
+                        if content.get("type") == "image_url" and "url" in content["image_url"]:
+                            if content["image_url"]["url"].startswith("data:image"):
+                                content = {
+                                    "type": "text",
+                                    "text": "[Previous Image]"
+                                }
+                        cleaned_content.append(content)
+                    cleaned_message["content"] = cleaned_content
+            cleaned_messages.append(cleaned_message)
 
         # Trim messages to fit in model's max_tokens
         # logger.debug(f"Trimming message content to max_input_tokens value: {litellm_model_props['model_info']['max_input_tokens']}")
@@ -289,15 +253,10 @@ class Pipeline:
             "stop",
         }
 
-        final_messages = []
-        if system_message:
-            final_messages.append({"role": "system", "content": system_message})
-        final_messages.extend(cleaned_messages)
-
         # Final payload with base properties
         payload = {
             "model": model_name, # optional vision model if image in last message
-            "messages": final_messages,
+            "messages": [{"role": "system", "content": system_prompt}, *cleaned_messages], # only most recent message contains data blobs
             "stream": body.get("stream", True),
             "return_citations": self.valves.PERPLEXITY_RETURN_CITATIONS,
             "return_images": self.valves.PERPLEXITY_RETURN_IMAGES,
@@ -310,9 +269,12 @@ class Pipeline:
             if param in body:
                 payload[param] = body[param]
 
-        # TODO: Add metadata
-        # if metadata:
-        #     payload["metadata"] = metadata
+        # Add user and metadata if they exist
+        if __user__.get("id"):
+            payload["user"] = __user__["id"]
+
+        if metadata:
+            payload["metadata"] = metadata
 
         logger.debug(f"Built payload with {len(payload)} parameters")
 
@@ -415,11 +377,11 @@ class Pipeline:
 
                 citations_content = ""
                 if citations and len(citations) > 0:
-                    citations_content += "\n\n**Sources**"
+                    citations_content += "\n\n<details>\n<summary>Sources</summary>\n"
                     for i, citation in enumerate(citations, 1):
                         citations_content += f"\n[{i}] [{citation}]({citation})"
+                    citations_content += "\n</details>"
                 yield citations_content
-                yield ""
         except requests.exceptions.RequestException as e:
             print(f"Request failed: {e}")
             yield f"Error: Request failed: {e}"
@@ -458,12 +420,51 @@ class Pipeline:
             print(f"Failed non-stream request: {e}")
             return f"Error: {e}"
 
+    def pipes(self):
+        global logger
+        if self.valves.PIPE_DEBUG:
+            logger.setLevel(logging.DEBUG)
+            logger.debug("Debug logging is enabled for the pipe")
+        else:
+            logger.setLevel(logging.INFO)
+            logger.info("Debug logging is disabled for the pipe")
+
+        return [
+            {
+                "id": "llama-3.1-sonar-small-128k-online",
+                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Small 128k Online",
+            },
+            {
+                "id": "llama-3.1-sonar-large-128k-online",
+                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Large 128k Online",
+            },
+            {
+                "id": "llama-3.1-sonar-huge-128k-online",
+                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Huge 128k Online",
+            },
+            {
+                "id": "llama-3.1-sonar-small-128k-chat",
+                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Small 128k Chat",
+            },
+            {
+                "id": "llama-3.1-sonar-large-128k-chat",
+                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 Sonar Large 128k Chat",
+            },
+            {
+                "id": "llama-3.1-8b-instruct",
+                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 8B Instruct",
+            },
+            {
+                "id": "llama-3.1-70b-instruct",
+                "name": f"{self.valves.NAME_PREFIX}Llama 3.1 70B Instruct",
+            },
+        ]
+
     def pipe(
         self,
-        user_message: str,
-        model_id: str,
-        messages: List[dict],
-        body: dict
+        body: dict,
+        __user__: dict,
+        __metadata__: dict,
     ) -> Generator[str, None, None]:
         logger.debug(f"pipe:{__name__}")
 
@@ -476,16 +477,20 @@ class Pipeline:
             "accept": "application/json",
         }
 
+        user_valves = __user__.get("valves")
+        if not user_valves:
+            user_valves = self.UserValves()
+
         citations = set()
 
         try:
-            # metadata = self._build_metadata(__user__, __metadata__, user_valves)
-            payload = self._build_completion_payload(user_message, model_id, messages, body)
+            metadata = self._build_metadata(__user__, __metadata__, user_valves)
+            payload = self._build_completion_payload(body, __user__, metadata, user_valves)
 
             logger.debug(f"Payload: {pformat(payload)}")
 
             try:
-                # is_title_gen = __metadata__.get("task") == "title_generation"
+                is_title_gen = __metadata__.get("task") == "title_generation"
 
                 if body["stream"]:
                     logger.debug(f"Streaming response")
@@ -493,7 +498,7 @@ class Pipeline:
                         yield chunk
                 else:
                     logger.debug(f"Building response object")
-                    content = self._get_response(headers, payload, citations)
+                    content = self._get_response(headers, payload, citations, is_title_gen)
                     yield content
 
             except requests.exceptions.RequestException as e:
